@@ -31,7 +31,6 @@ outputType = "console"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "PORT=8000 npx tsx apps/api/src/server.ts"
-waitForPort = 8000
 
 [[workflows.workflow]]
 name = "Start application"
@@ -48,3 +47,7 @@ waitForPort = 5000
 [[ports]]
 localPort = 5000
 externalPort = 80
+
+[[ports]]
+localPort = 5001
+externalPort = 3000

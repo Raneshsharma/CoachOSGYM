@@ -6018,10 +6018,6 @@ function App() {
     setSession(null);
   };
 
-  if (!authToken) {
-    return <LoginScreen onLogin={handleLogin} />;
-  }
-
   // Check if onboarding was already completed
   const [showOnboarding, setShowOnboarding] = useState(() => {
     try { return localStorage.getItem("coachos_onboarded") !== "true"; }
@@ -6070,8 +6066,9 @@ function App() {
   }, [selectedClientId, switchClient]);
 
   useEffect(() => {
+    if (!authToken) return;
     loadCoach().catch(err => setLoadError(err instanceof Error ? err.message : "Connection failed — is the API running?"));
-  }, []);
+  }, [authToken]);
 
   useEffect(() => {
     if (session) applyWorkspaceTheme(session.workspace);
@@ -6269,6 +6266,11 @@ function App() {
   const handleArchiveGroupProgram = async (programId: string) => {
     await fetchJson(`/group-programs/${programId}`, { method: "DELETE" });
   };
+
+  // Auth guard
+  if (!authToken) {
+    return <LoginScreen onLogin={handleLogin} />;
+  }
 
   // Loading & error states
   if (!session) {
