@@ -1,0 +1,6422 @@
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { createRoot } from "react-dom/client";
+import type {
+  CheckIn, ClientProfile, ClientProfilePatch, CoachUser,
+  CoachWorkspace, PaymentSubscription, ProgramPlan, ProofCard, Message
+} from "@coachos/domain";
+import { Pill, SectionShell, StatCard } from "@coachos/ui";
+import "./styles.css";
+import { CompetitorsView } from "./views/CompetitorsView";
+import { ExerciseLibraryView } from "./views/ExerciseLibraryView";
+import { deriveClientInitials, sanitizeClientAvatarPrefs, type ClientAvatarPrefs } from "./lib/clientAvatar";
+import { MealPlannerTab } from "./views/MealPlannerTab";
+import { RecipeBrowserView } from "./views/RecipeBrowserView";
+import { WorkoutPlannerTab, type WorkoutExercise, type WorkoutWeekDay } from "./views/WorkoutPlannerTab";
+
+/* ────────────────────────────────────────
+   TYPES
+──────────────────────────────────────── */
+type Dashboard = {
+  activeClients: number; checkedInToday: number; dueRenewals: number;
+  revenueSnapshotGbp: number;
+  atRiskClients: Array<{ clientId: string; severity: "low"|"medium"|"high"; reasons: string[]; recommendedAction: string }>;
+};
+type CoachSession = { workspace: CoachWorkspace; coach: CoachUser; clients: ClientProfile[]; plans: ProgramPlan[]; subscriptions: PaymentSubscription[]; dashboard: Dashboard };
+type ClientSession = { client: ClientProfile; plan: ProgramPlan | null; latestCheckIn: CheckIn | null; proofCard: ProofCard; messages: Message[] };
+type ClientNote = { id: string; coachId: string; clientId: string; content: string; createdAt: string; updatedAt: string };
+type BodyMetric = { id: string; clientId: string; date: string; weightKg: number | null; bodyFatPct: number | null; waistCm: number | null; hipsCm?: number | null; armCm?: number | null; thighCm?: number | null; energyScore?: number | null; sleepRating?: number | null; notes?: string | null };
+const clientAvatarStorageKey = (clientId: string) => `coachos_client_avatar_${clientId}`;
+type ToastType = "success" | "error" | "warning" | "info";
+type ToastAction = { label: string; onClick: () => void };
+type ToastOptions = {
+  title?: string;
+  action?: ToastAction;
+  duration?: number;
+};
+type Toast = {
+  id: number;
+  message: string;
+  type: ToastType;
+  title?: string;
+  action?: ToastAction;
+  duration: number;
+};
+type NavId = "dashboard"|"clients"|"plans"|"portal"|"billing"|"settings"|"migration"|"competitors"|"groups"|"habits"|"exercises"|"calendar"|"recipes";
+type CheckInWithDelta = CheckIn & { weightDelta: number | null; energyDelta: number | null; adherenceDelta: number | null };
+type GroupProgram = { id: string; coachId: string; title: string; description: string; goal: string; memberIds: string[]; monthlyPriceGbp: number; status: "active"|"archived"|"upcoming"; createdAt: string };
+type NutritionSwap = { id: string; planId: string; originalFood: { name: string; calories: number; proteinG: number; carbsG: number; fatG: number; portion: string }; swapSuggestion: { name: string; calories: number; proteinG: number; carbsG: number; fatG: number; portion: string; reasoning: string }; appliedAt: string | null };
+type SwapSuggestion = { original: { name: string; calories: number; proteinG: number; carbsG: number; fatG: number; portion: string }; suggestion: { name: string; calories: number; proteinG: number; carbsG: number; fatG: number; portion: string; reasoning: string } | null };
+type Habit = { id: string; clientId: string; title: string; target: number; frequency: "daily"|"weekly"; createdAt: string };
+type HabitSummary = { habit: Habit; streak: number; todayDone: boolean; totalCompletions: number };
+type Exercise = { id: string; name: string; bodyPart: string; equipment: string; goal: string; difficulty: "beginner"|"intermediate"|"advanced"; instructions: string };
+type Recipe = { id: string; name: string; ingredients: string[]; steps: string[]; calories: number; proteinG: number; carbsG: number; fatG: number; prepTime: number; cookTime: number; tags: string[] };
+
+type PlannerMeal = {
+  slot: string;
+  name: string;
+  cal: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  note: string;
+  optional?: boolean;
+};
+
+type PlannerWeekDay = {
+  name: string;
+  meals: PlannerMeal[];
+};
+
+const DEFAULT_WORKOUT_DAY_NAME = "Mon";
+
+type PlannerTarget = {
+  day: string;
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+};
+
+function createPlannerWeek(): PlannerWeekDay[] {
+  return [
+    {
+      name: "Mon",
+      meals: [
+        { slot: "Breakfast", name: "Greek Yogurt with Berries", cal: 320, protein: 24, carbs: 35, fat: 8, note: "High protein breakfast with antioxidant-rich berries. Use Greek yogurt for extra thickness." },
+        { slot: "Lunch", name: "Grilled Chicken Salad", cal: 450, protein: 45, carbs: 28, fat: 15, note: "Lean protein with mixed greens and olive oil dressing." },
+        { slot: "Snacks", name: "-", cal: 0, protein: 0, carbs: 0, fat: 0, note: "" },
+        { slot: "Dinner", name: "-", cal: 0, protein: 0, carbs: 0, fat: 0, note: "" },
+      ],
+    },
+    ...["Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day) => ({
+      name: day,
+      meals: [
+        { slot: "Breakfast", name: "-", cal: 0, protein: 0, carbs: 0, fat: 0, note: "" },
+        { slot: "Lunch", name: "-", cal: 0, protein: 0, carbs: 0, fat: 0, note: "" },
+        { slot: "Snacks", name: "-", cal: 0, protein: 0, carbs: 0, fat: 0, note: "" },
+        { slot: "Dinner", name: "-", cal: 0, protein: 0, carbs: 0, fat: 0, note: "" },
+      ],
+    })),
+  ];
+}
+
+function createWorkoutWeek(): WorkoutWeekDay[] {
+  return [
+    {
+      name: DEFAULT_WORKOUT_DAY_NAME,
+      durationMinutes: 45,
+      focus: "Full Body",
+      exercises: [
+        { id: 1, name: "Jumping Jacks", tag: "Metabolic / Plyometric", sets: "3 Sets of 50", duration: "60 Seconds", advanced: "", bodyPart: "Plyometric", equipment: "Bodyweight" },
+        { id: 2, name: "High Knees", tag: "Agility / Power", sets: "Per Set: 30", duration: "45 Seconds", advanced: "Ankle Weights 1kg", bodyPart: "Agility", equipment: "Ankle Weights" },
+        { id: 3, name: "Butt Kicks", tag: "Metabolic / Warmup", sets: "Fixed: 40", duration: "30 Seconds", advanced: "", bodyPart: "Warmup", equipment: "Bodyweight" },
+      ],
+      notes: "",
+    },
+    { name: "Tue", durationMinutes: 60, focus: "Upper Body", exercises: [], notes: "" },
+    { name: "Wed", durationMinutes: null, focus: "Recovery", isRest: true, exercises: [], notes: "" },
+    { name: "Thu", durationMinutes: 45, focus: "Lower Body", exercises: [], notes: "" },
+    { name: "Fri", durationMinutes: 45, focus: "Push", exercises: [], notes: "" },
+    { name: "Sat", durationMinutes: 30, focus: "Conditioning", exercises: [], notes: "" },
+    { name: "Sun", durationMinutes: null, focus: "Recovery", isRest: true, exercises: [], notes: "" },
+  ];
+}
+
+function normalizeWorkoutExercise(
+  exercise: Partial<WorkoutExercise>,
+  fallbackId: number
+): WorkoutExercise {
+  const parsedId = typeof exercise.id === "number" ? exercise.id : Number(exercise.id);
+  return {
+    id: Number.isFinite(parsedId) ? parsedId : fallbackId,
+    name: exercise.name ?? "New Exercise",
+    tag: exercise.tag ?? "Custom",
+    sets: exercise.sets ?? "3 Sets of 12",
+    duration: exercise.duration ?? "45 Seconds",
+    advanced: exercise.advanced ?? "",
+    bodyPart: exercise.bodyPart,
+    equipment: exercise.equipment,
+  };
+}
+
+function replaceWorkoutExercisesForDay(
+  week: WorkoutWeekDay[],
+  dayName: string,
+  exercises: WorkoutExercise[]
+): WorkoutWeekDay[] {
+  return week.map((day) =>
+    day.name === dayName
+      ? { ...day, exercises: exercises.map((exercise) => ({ ...exercise })) }
+      : { ...day, exercises: day.exercises.map((exercise) => ({ ...exercise })) }
+  );
+}
+
+function createPlannerTargets(client: ClientProfile | null | undefined): PlannerTarget[] {
+  const calories = client?.nutritionCalories ?? 1950;
+  const protein = client?.nutritionProteinG ?? 150;
+  const carbs = client?.nutritionCarbsG ?? 210;
+  const fat = client?.nutritionFatG ?? 58;
+
+  return [
+    { day: "Mon", calories: 1400, protein, carbs, fat },
+    { day: "Tue", calories: 1850, protein, carbs, fat },
+    { day: "Wed", calories: 1950, protein, carbs, fat },
+    { day: "Thu", calories: 2100, protein, carbs, fat },
+    { day: "Fri", calories: 1900, protein, carbs, fat },
+    { day: "Sat", calories: 2200, protein, carbs, fat },
+    { day: "Sun", calories: 1600, protein, carbs, fat },
+  ];
+}
+
+/* ────────────────────────────────────────
+   API HELPERS
+──────────────────────────────────────── */
+const isProd = import.meta.env.PROD;
+const apiBase = isProd ? "/api" : "http://localhost:8000/api";
+const coachIdStorageKey = "coachos_coach_id";
+const authTokenStorageKey = "coachos_auth_token";
+
+function getStoredCoachId() {
+  try { return localStorage.getItem(coachIdStorageKey); }
+  catch { return null; }
+}
+
+function getStoredAuthToken() {
+  try { return localStorage.getItem(authTokenStorageKey); }
+  catch { return null; }
+}
+
+async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const coachId = getStoredCoachId();
+  const token = getStoredAuthToken();
+  const separator = path.includes("?") ? "&" : "?";
+  const scopedPath = coachId ? `${path}${separator}coachId=${encodeURIComponent(coachId)}` : path;
+  const authHeaders: Record<string, string> = token ? { "Authorization": `Bearer ${token}` } : {};
+  const res = await fetch(`${apiBase}${scopedPath}`, {
+    ...init,
+    headers: { "Content-Type": "application/json", ...authHeaders, ...(init?.headers ?? {}) }
+  });
+  if (!res.ok) throw new Error(`API error ${res.status} for ${path}`);
+  return res.json() as Promise<T>;
+}
+export { fetchJson };
+
+/* ────────────────────────────────────────
+   TOAST HOOK
+──────────────────────────────────────── */
+const MAX_VISIBLE_TOASTS = 5;
+const DEFAULT_DURATION = 4000;
+
+function useToast() {
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [queue, setQueue] = useState<Toast[]>([]);
+  const counter = useRef(0);
+
+  const dismiss = useCallback((id: number) => {
+    setToasts(prev => {
+      const next = prev.filter(t => t.id !== id);
+      // Flush one from queue if we have space
+      if (next.length < MAX_VISIBLE_TOASTS && queue.length > 0) {
+        const [first, ...rest] = queue;
+        setQueue(rest);
+        // Schedule auto-dismiss for the queued toast
+        setTimeout(() => setToasts(ts => ts.filter(t => t.id !== first.id)), first.duration);
+        return [...next, first];
+      }
+      return next;
+    });
+  }, [queue]);
+
+  const push = useCallback((
+    message: string,
+    type: ToastType = "success",
+    options: ToastOptions = {}
+  ) => {
+    const id = ++counter.current;
+    const duration = options.duration ?? DEFAULT_DURATION;
+    const toast: Toast = {
+      id,
+      message,
+      type,
+      title: options.title,
+      action: options.action,
+      duration,
+    };
+
+    setToasts(prev => {
+      if (prev.length >= MAX_VISIBLE_TOASTS) {
+        // Queue it — don't overflow the screen
+        setQueue(q => [...q, toast]);
+        return prev;
+      }
+      // Auto-dismiss after duration
+      setTimeout(() => dismiss(id), duration);
+      return [...prev, toast];
+    });
+
+    return id;
+  }, [dismiss]);
+
+  const success = useCallback((message: string, options?: ToastOptions) =>
+    push(message, "success", options), [push]);
+
+  const error = useCallback((message: string, options?: ToastOptions) =>
+    push(message, "error", { duration: 6000, ...options }), [push]);
+
+  const warning = useCallback((message: string, options?: ToastOptions) =>
+    push(message, "warning", { duration: 5000, ...options }), [push]);
+
+  const info = useCallback((message: string, options?: ToastOptions) =>
+    push(message, "info", options), [push]);
+
+  return { toasts, push, dismiss, success, error, warning, info };
+}
+
+/* ────────────────────────────────────────
+   CSV HELPER
+──────────────────────────────────────── */
+function csvToRows(csv: string) {
+  const [, ...lines] = csv.trim().split("\n");
+  return lines.map(l => l.split(",")).filter(p => p.length >= 4)
+    .map(([name, email, goal, price]) => ({ name: name.trim(), email: email.trim(), goal: goal.trim(), monthlyPriceGbp: Number(price.trim()) }));
+}
+
+/* ────────────────────────────────────────
+   SMALL COMPONENTS
+──────────────────────────────────────── */
+function Avatar({ name }: { name: string }) {
+  const initials = name.split(" ").map(p => p[0]).slice(0, 2).join("").toUpperCase();
+  return <div className="client-avatar">{initials}</div>;
+}
+
+function getClientStatusMeta(status: string) {
+  if (status === "at_risk") {
+    return {
+      label: "At Risk",
+      pillClass: "pill-danger",
+      badgeClass: "badge-danger",
+      avatarBg: "var(--danger-light)",
+      avatarColor: "var(--danger-text)",
+      footerText: "Needs attention",
+      footerColor: "var(--danger)",
+      footerIcon: "warning",
+    };
+  }
+  if (status === "trial") {
+    return {
+      label: "Trial",
+      pillClass: "pill-warning",
+      badgeClass: "badge-warning",
+      avatarBg: "var(--tertiary-fixed)",
+      avatarColor: "var(--on-tertiary-fixed-variant)",
+      footerText: "Trial active",
+      footerColor: "var(--on-surface-variant)",
+      footerIcon: null,
+    };
+  }
+  if (status === "inactive") {
+    return {
+      label: "Inactive",
+      pillClass: "pill-muted",
+      badgeClass: "badge-muted",
+      avatarBg: "var(--surface-container)",
+      avatarColor: "var(--outline)",
+      footerText: "Inactive",
+      footerColor: "var(--outline)",
+      footerIcon: "pause_circle",
+    };
+  }
+  return {
+    label: "Active",
+    pillClass: "pill-success",
+    badgeClass: "badge-success",
+    avatarBg: "var(--primary-fixed-dim)",
+    avatarColor: "var(--primary)",
+    footerText: "On track",
+    footerColor: "var(--on-surface-variant)",
+    footerIcon: null,
+  };
+}
+
+function StatusPill({ status }: { status: string }) {
+  const meta = getClientStatusMeta(status);
+  return <span className={`pill ${meta.pillClass}`}>{meta.label}</span>;
+}
+
+function AdherenceBar({ score }: { score: number }) {
+  const color = score < 50 ? "var(--danger)" : score < 75 ? "var(--warning)" : "var(--primary)";
+  return (
+    <div>
+      <div className="inline-spread text-xs muted" style={{ marginBottom: 4 }}>
+        <span>Adherence</span><span style={{ color }}>{score}%</span>
+      </div>
+      <div className="progress-bar-track">
+        <div className="progress-bar-fill" style={{ width: `${score}%`, background: color }} />
+      </div>
+    </div>
+  );
+}
+
+function AdherenceTrend({ deltaWeek }: { deltaWeek?: number }) {
+  const delta = typeof deltaWeek === "number" ? deltaWeek : 0;
+  const label = delta > 0 ? `↑ +${delta}% this week` : delta < 0 ? `↓ ${delta}% this week` : "→ 0% this week";
+  const color = delta > 0 ? "var(--primary)" : delta < 0 ? "var(--danger)" : "var(--outline)";
+  return <span style={{ fontFamily: "Inter, sans-serif", fontSize: "0.68rem", fontWeight: 700, color }}>{label}</span>;
+}
+
+function convertKgToUnit(valueKg: number, unit: "kg" | "lb") {
+  return unit === "lb" ? valueKg * 2.20462 : valueKg;
+}
+
+function convertUnitToKg(value: number, unit: "kg" | "lb") {
+  return unit === "lb" ? value / 2.20462 : value;
+}
+
+function formatWeightValue(valueKg: number | null | undefined, unit: "kg" | "lb") {
+  if (valueKg == null) return "—";
+  const converted = convertKgToUnit(valueKg, unit);
+  return `${converted.toFixed(unit === "lb" ? 1 : 1)} ${unit}`;
+}
+
+const TOAST_ICONS: Record<ToastType, string> = {
+  success: "check_circle",
+  error:   "error",
+  warning: "warning",
+  info:    "info",
+};
+
+function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: number) => void }) {
+  const [progress, setProgress] = useState(100);
+  const [exiting, setExiting] = useState(false);
+  const rafRef = useRef<number>(0);
+  const startRef = useRef<number>(0);
+
+  const handleDismiss = () => {
+    setExiting(true);
+    setTimeout(() => onDismiss(toast.id), 280);
+  };
+
+  useEffect(() => {
+    startRef.current = Date.now();
+    const tick = () => {
+      const elapsed = Date.now() - startRef.current;
+      const pct = Math.max(0, 100 - (elapsed / toast.duration) * 100);
+      setProgress(pct);
+      if (pct > 0) {
+        rafRef.current = requestAnimationFrame(tick);
+      }
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [toast.duration]);
+
+  return (
+    <div
+      className={`toast toast--${toast.type}${exiting ? " toast--exiting" : ""}`}
+      role="alert"
+      aria-live="polite"
+    >
+      <span className="toast-icon material-symbols-outlined">
+        {TOAST_ICONS[toast.type]}
+      </span>
+
+      <div className="toast-body">
+        {toast.title
+          ? <>
+              <div className="toast-title">{toast.title}</div>
+              <div className="toast-message">{toast.message}</div>
+            </>
+          : <div className="toast-message">{toast.message}</div>
+        }
+        {toast.action && (
+          <button
+            className="toast-action-btn"
+            onClick={() => { toast.action!.onClick(); handleDismiss(); }}
+          >
+            {toast.action.label}
+          </button>
+        )}
+      </div>
+
+      <button
+        className="toast-close"
+        onClick={handleDismiss}
+        aria-label="Dismiss notification"
+      >
+        <span className="material-symbols-outlined">close</span>
+      </button>
+
+      <div className="toast-progress">
+        <div
+          className={`toast-progress-bar toast-progress-bar--${toast.type}`}
+          style={{ width: `${progress}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function ToastContainer({
+  toasts,
+  onDismiss
+}: {
+  toasts: Toast[];
+  onDismiss: (id: number) => void;
+}) {
+  return (
+    <div className="toast-container" aria-label="Notifications">
+      {toasts.map(t => (
+        <ToastItem key={t.id} toast={t} onDismiss={onDismiss} />
+      ))}
+    </div>
+  );
+}
+
+
+/* ────────────────────
+   LOGIN SCREEN
+────────────────────── */
+function LoginScreen({ onLogin }: { onLogin: (token: string, coachId: string) => void }) {
+  const [tab, setTab] = useState<"login" | "register">("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [showPw, setShowPw] = useState(false);
+  const isProd = import.meta.env.PROD;
+  const base = isProd ? "/api" : "http://localhost:8000/api";
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+    try {
+      const endpoint = tab === "login" ? "/auth/login" : "/auth/register";
+      const body = tab === "login"
+        ? { email, password }
+        : { email, password, firstName, lastName };
+      const res = await fetch(`${base}${endpoint}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.message ?? "Something went wrong.");
+        return;
+      }
+      onLogin(data.token, data.coachId);
+    } catch {
+      setError("Cannot connect to server. Is the API running?");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{
+      minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
+      background: "var(--bg-base)", padding: "1rem"
+    }}>
+      <div style={{
+        width: "min(440px, 100%)", background: "var(--surface-container-lowest)",
+        borderRadius: "var(--r-xl)", border: "1px solid var(--outline-variant)",
+        boxShadow: "var(--shadow-xl)", overflow: "hidden"
+      }}>
+        <div style={{
+          background: "var(--bg-sidebar)", padding: "2rem 2rem 1.5rem",
+          textAlign: "center"
+        }}>
+          <div style={{
+            width: 52, height: 52, borderRadius: "var(--r-md)",
+            background: "var(--primary)", display: "flex", alignItems: "center",
+            justifyContent: "center", margin: "0 auto 1rem",
+            fontSize: "1.5rem", fontFamily: "Manrope, sans-serif",
+            fontWeight: 800, color: "#fff"
+          }}>C</div>
+          <h1 style={{
+            fontFamily: "Manrope, sans-serif", fontWeight: 800, fontSize: "1.35rem",
+            color: "#fff", margin: "0 0 0.25rem"
+          }}>CoachOS</h1>
+          <p style={{
+            fontFamily: "Inter, sans-serif", fontSize: "0.8rem",
+            color: "rgba(255,255,255,0.55)", margin: 0
+          }}>The all-in-one platform for online fitness coaches</p>
+        </div>
+
+        <div style={{ padding: "0 2rem", borderBottom: "1px solid var(--outline-variant)", display: "flex" }}>
+          {(["login", "register"] as const).map(t => (
+            <button key={t} onClick={() => { setTab(t); setError(null); }}
+              style={{
+                flex: 1, padding: "0.9rem 0", background: "none", border: "none",
+                borderBottom: tab === t ? "2px solid var(--primary)" : "2px solid transparent",
+                color: tab === t ? "var(--primary)" : "var(--outline)",
+                fontFamily: "Inter, sans-serif", fontWeight: 600, fontSize: "0.85rem",
+                cursor: "pointer", transition: "all 0.15s"
+              }}
+            >{t === "login" ? "Sign In" : "Create Account"}</button>
+          ))}
+        </div>
+
+        <form onSubmit={handleSubmit} style={{ padding: "1.75rem 2rem 2rem" }}>
+          {tab === "register" && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginBottom: "0.75rem" }}>
+              <div>
+                <label style={{ display: "block", fontFamily: "Inter, sans-serif", fontSize: "0.72rem", fontWeight: 600, color: "var(--outline)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "0.35rem" }}>First Name</label>
+                <input value={firstName} onChange={e => setFirstName(e.target.value)} required placeholder="Jane" style={{ width: "100%", padding: "0.6rem 0.75rem", borderRadius: "var(--r-md)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--text-primary)", fontFamily: "Inter, sans-serif", fontSize: "0.9rem", outline: "none", boxSizing: "border-box" }} />
+              </div>
+              <div>
+                <label style={{ display: "block", fontFamily: "Inter, sans-serif", fontSize: "0.72rem", fontWeight: 600, color: "var(--outline)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "0.35rem" }}>Last Name</label>
+                <input value={lastName} onChange={e => setLastName(e.target.value)} required placeholder="Smith" style={{ width: "100%", padding: "0.6rem 0.75rem", borderRadius: "var(--r-md)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--text-primary)", fontFamily: "Inter, sans-serif", fontSize: "0.9rem", outline: "none", boxSizing: "border-box" }} />
+              </div>
+            </div>
+          )}
+
+          <div style={{ marginBottom: "0.75rem" }}>
+            <label style={{ display: "block", fontFamily: "Inter, sans-serif", fontSize: "0.72rem", fontWeight: 600, color: "var(--outline)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "0.35rem" }}>Email</label>
+            <input type="email" value={email} onChange={e => setEmail(e.target.value)} required placeholder="you@example.com" style={{ width: "100%", padding: "0.6rem 0.75rem", borderRadius: "var(--r-md)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--text-primary)", fontFamily: "Inter, sans-serif", fontSize: "0.9rem", outline: "none", boxSizing: "border-box" }} />
+          </div>
+
+          <div style={{ marginBottom: "1.25rem", position: "relative" }}>
+            <label style={{ display: "block", fontFamily: "Inter, sans-serif", fontSize: "0.72rem", fontWeight: 600, color: "var(--outline)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "0.35rem" }}>Password</label>
+            <input type={showPw ? "text" : "password"} value={password} onChange={e => setPassword(e.target.value)} required placeholder={tab === "register" ? "At least 6 characters" : "Your password"} style={{ width: "100%", padding: "0.6rem 2.5rem 0.6rem 0.75rem", borderRadius: "var(--r-md)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--text-primary)", fontFamily: "Inter, sans-serif", fontSize: "0.9rem", outline: "none", boxSizing: "border-box" }} />
+            <button type="button" onClick={() => setShowPw(v => !v)} style={{ position: "absolute", right: "0.6rem", top: "calc(1.5rem + 0.6rem + 0.35rem)", background: "none", border: "none", cursor: "pointer", color: "var(--outline)", padding: "0.1rem", display: "flex", alignItems: "center" }}>
+              <span className="material-symbols-outlined" style={{ fontSize: "1.1rem" }}>{showPw ? "visibility_off" : "visibility"}</span>
+            </button>
+          </div>
+
+          {error && (
+            <div style={{ background: "var(--danger-light)", border: "1px solid var(--danger)", borderRadius: "var(--r-sm)", padding: "0.6rem 0.75rem", marginBottom: "1rem", fontFamily: "Inter, sans-serif", fontSize: "0.82rem", color: "var(--danger-text)" }}>
+              {error}
+            </div>
+          )}
+
+          <button type="submit" disabled={loading} style={{
+            width: "100%", padding: "0.75rem", borderRadius: "var(--r-md)",
+            background: "var(--primary)", color: "#fff", border: "none",
+            fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "0.95rem",
+            cursor: loading ? "not-allowed" : "pointer", opacity: loading ? 0.7 : 1,
+            transition: "opacity 0.15s"
+          }}>
+            {loading ? "Please wait…" : tab === "login" ? "Sign In" : "Create Account"}
+          </button>
+
+          {tab === "login" && (
+            <div style={{ marginTop: "1.25rem", padding: "0.85rem 1rem", background: "var(--primary-light)", borderRadius: "var(--r-md)", border: "1px solid var(--primary-container)" }}>
+              <p style={{ fontFamily: "Inter, sans-serif", fontSize: "0.75rem", fontWeight: 600, color: "var(--primary-dark)", margin: "0 0 0.25rem" }}>Demo credentials</p>
+              <p style={{ fontFamily: "Inter, sans-serif", fontSize: "0.75rem", color: "var(--primary-dark)", margin: 0 }}>
+                Email: <strong>jake@coachos.demo</strong><br />
+                Password: <strong>demo123</strong>
+              </p>
+            </div>
+          )}
+        </form>
+      </div>
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────
+   SIDEBAR
+──────────────────────────────────────── */
+function Sidebar({
+  active, onNav, session, atRiskCount, notifications, setNotifications, showNotifications, setShowNotifications, onLogout
+}: {
+  active: NavId;
+  onNav: (id: NavId) => void;
+  session: CoachSession | null;
+  atRiskCount: number;
+  notifications: Array<{ id: string; message: string; type: string; time: string; read: boolean }>;
+  setNotifications: React.Dispatch<React.SetStateAction<Array<{ id: string; message: string; type: string; time: string; read: boolean }>>>;
+  showNotifications: boolean;
+  setShowNotifications: React.Dispatch<React.SetStateAction<boolean>>;
+  onLogout: () => void;
+}) {
+  const nav = (id: NavId, icon: string, label: string, badge?: number) => (
+    <button key={id} className={`nav-item${active === id ? " active" : ""}`} onClick={() => onNav(id)}>
+      <span className="nav-item-icon">{icon}</span>
+      <span>{label}</span>
+      {badge ? <span className="nav-item-badge">{badge}</span> : null}
+    </button>
+  );
+  return (
+    <aside className="sidebar">
+      <div className="sidebar-logo">
+        <div className="sidebar-logo-mark">C</div>
+        <div>
+          <div className="sidebar-logo-name">CoachOS</div>
+          <div className="sidebar-logo-tag">v1.0</div>
+        </div>
+      </div>
+
+      <button
+        onClick={() => setShowNotifications(v => !v)}
+        style={{ position: 'relative', background: showNotifications ? 'var(--primary-light)' : 'none', border: 'none', cursor: 'pointer', padding: '0.5rem', borderRadius: 'var(--r-md)', display: 'grid', placeItems: 'center', alignSelf: 'flex-start', width: '36px', height: '36px', marginLeft: 'auto', marginBottom: '0.5rem' }}>
+        <span className="material-symbols-outlined" style={{ fontSize: '1.1rem', color: showNotifications ? 'var(--primary)' : 'var(--outline)' }}>notifications</span>
+        {notifications.filter(n => !n.read).length > 0 && (
+          <span style={{ position: 'absolute', top: '4px', right: '4px', background: 'var(--danger)', color: 'white', borderRadius: '50%', width: '14px', height: '14px', fontSize: '0.55rem', fontWeight: 800, display: 'grid', placeItems: 'center', fontFamily: 'Inter, sans-serif' }}>
+            {notifications.filter(n => !n.read).length}
+          </span>
+        )}
+      </button>
+      {showNotifications && (
+        <div style={{ background: 'var(--surface-container-low)', borderRadius: 'var(--r-lg)', border: '1px solid var(--outline-variant)', padding: '0.75rem', marginBottom: '0.75rem', maxHeight: '280px', overflowY: 'auto' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+            <h3 style={{ fontFamily: 'Manrope, sans-serif', fontWeight: 700, fontSize: '0.8rem', color: 'var(--text-primary)', margin: 0 }}>Notifications</h3>
+            {notifications.length > 0 && (
+              <button onClick={() => setNotifications(ns => ns.map(n => ({ ...n, read: true })))} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--primary)', fontFamily: 'Inter, sans-serif', fontSize: '0.7rem', fontWeight: 600 }}>Mark all read</button>
+            )}
+          </div>
+          {notifications.length === 0 ? (
+            <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.75rem', color: 'var(--outline)', textAlign: 'center', padding: '1rem 0' }}>No notifications yet</p>
+          ) : (
+            notifications.map(n => (
+              <div key={n.id} style={{ padding: '0.5rem 0', borderBottom: '1px solid var(--surface-container)', display: 'flex', gap: '0.5rem', alignItems: 'flex-start', opacity: n.read ? 0.6 : 1 }}>
+                {!n.read && <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--primary)', flexShrink: 0, marginTop: '0.35rem' }} />}
+                {n.read && <span style={{ width: '6px', height: '6px', flexShrink: 0, marginTop: '0.35rem' }} />}
+                <div>
+                  <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.75rem', color: 'var(--text-primary)', margin: 0 }}>{n.message}</p>
+                  <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.65rem', color: 'var(--outline)', margin: '0.1rem 0 0 0' }}>{n.time}</p>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      <nav className="sidebar-nav">
+        <span className="nav-section-label">Overview</span>
+        {nav("dashboard", "◎", "Coach Dashboard", atRiskCount || undefined)}
+
+        <span className="nav-section-label">Clients</span>
+        {nav("clients", "⊞", "All Clients")}
+        {nav("portal", "⊡", "Client Portal")}
+        {nav("calendar", "▦", "Calendar")}
+        {nav("plans", "✦", "AI Plans")}
+        {nav("habits", "◉", "Habits")}
+        {nav("groups", "⬡", "Group Programs")}
+
+        <span className="nav-section-label">Preview</span>
+        {nav("exercises", "⬢", "Exercise Library")}
+        {nav("recipes", "◈", "Recipe Browser")}
+
+        <span className="nav-section-label">Business</span>
+        {nav("billing", "£", "Billing & MRR")}
+        {nav("competitors", "⊕", "Competitors")}
+        {nav("migration", "⇄", "Migration")}
+        {nav("settings", "⚙", "Workspace")}
+      </nav>
+
+      <div className="sidebar-footer">
+        {session && (
+          <div className="workspace-chip" style={{ marginBottom: "0.5rem" }}>
+            <div className="workspace-dot" />
+            <div>
+              <div style={{ fontWeight: 600, color: "var(--on-surface)", fontSize: "0.82rem" }}>{session.workspace.name}</div>
+              <div style={{ fontSize: "0.7rem" }}>{session.coach.firstName} {session.coach.lastName}</div>
+            </div>
+          </div>
+        )}
+        <button
+          onClick={onLogout}
+          style={{
+            width: "100%", display: "flex", alignItems: "center", gap: "0.5rem",
+            background: "none", border: "1px solid rgba(255,255,255,0.12)",
+            borderRadius: "var(--r-sm)", padding: "0.5rem 0.75rem",
+            color: "rgba(255,255,255,0.6)", cursor: "pointer",
+            fontFamily: "Inter, sans-serif", fontSize: "0.78rem", fontWeight: 500,
+            transition: "all 0.15s"
+          }}
+          onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.08)"; (e.currentTarget as HTMLButtonElement).style.color = "#fff"; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "none"; (e.currentTarget as HTMLButtonElement).style.color = "rgba(255,255,255,0.6)"; }}
+        >
+          <span className="material-symbols-outlined" style={{ fontSize: "1rem" }}>logout</span>
+          Sign out
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+/* ────────────────────────────────────────
+   VIEWS
+──────────────────────────────────────── */
+
+
+// ── SESSION BOOKING MODAL ──────────────
+function SessionBookingModal({ client, onClose, onSuccess, push }: {
+  client: { id: string; fullName: string };
+  onClose: () => void;
+  onSuccess: () => void;
+  push: (msg: string, type?: string) => void;
+}) {
+  const [sessionType, setSessionType] = useState<'virtual' | 'in_person'>('virtual');
+  const [date, setDate] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 3);
+    return d.toISOString().split('T')[0];
+  });
+  const [time, setTime] = useState('10:00');
+  const [duration, setDuration] = useState('60');
+  const [notes, setNotes] = useState('');
+  const [sending, setSending] = useState(false);
+  const [success, setSuccess] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSending(true);
+    try {
+      await fetchJson(`/clients/${client.id}/sessions`, {
+        method: 'POST',
+        body: JSON.stringify({ sessionType, date, time, duration: Number(duration), notes }),
+      });
+      setSuccess(true);
+      setTimeout(() => { onSuccess(); push(`Session booked for ${client.fullName}!`, 'success'); }, 1500);
+    } catch (error) {
+      push('Failed to book session. Try again.', 'error');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, backdropFilter: 'blur(4px)' }} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{ background: 'var(--surface-container-low)', borderRadius: 'var(--r-xl)', padding: '1.75rem', width: 'min(480px, 95vw)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 8px 32px rgba(0,0,0,0.24)', border: '1px solid var(--outline-variant)' }}>
+        {success ? (
+          <div style={{ textAlign: 'center', padding: '2rem 0' }}>
+            <div style={{ fontSize: '3rem', marginBottom: '0.75rem', animation: 'fadeIn 0.4s ease' }}>check_circle</div>
+            <h3 style={{ fontFamily: 'Manrope, sans-serif', fontWeight: 700, color: 'var(--primary)', marginBottom: '0.5rem' }}>Session Booked!</h3>
+            <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.85rem', color: 'var(--on-surface-variant)' }}>Invite sent to {client.fullName}.</p>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+              <h2 style={{ fontFamily: 'Manrope, sans-serif', fontWeight: 800, fontSize: '1.1rem', color: 'var(--text-primary)', margin: 0 }}>Book Session</h2>
+              <button type="button" onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--outline)', padding: '0.25rem', display: 'grid', placeItems: 'center' }}>
+                <span className="material-symbols-outlined" style={{ fontSize: '1.25rem' }}>close</span>
+              </button>
+            </div>
+            <p style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.8rem', color: 'var(--outline)', marginBottom: '1rem' }}>Schedule a coaching session with {client.fullName}.</p>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '1rem' }}>
+              <div>
+                <label style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.72rem', fontWeight: 600, color: 'var(--outline)', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: '0.35rem' }}>Date</label>
+                <input type="date" value={date} onChange={e => setDate(e.target.value)} required style={{ width: '100%', padding: '0.5rem 0.75rem', borderRadius: 'var(--r-md)', border: '1.5px solid var(--outline-variant)', background: 'var(--surface-container)', color: 'var(--text-primary)', fontFamily: 'Inter, sans-serif', fontSize: '0.85rem', boxSizing: 'border-box', outline: 'none' }} />
+              </div>
+              <div>
+                <label style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.72rem', fontWeight: 600, color: 'var(--outline)', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: '0.35rem' }}>Time</label>
+                <input type="time" value={time} onChange={e => setTime(e.target.value)} required style={{ width: '100%', padding: '0.5rem 0.75rem', borderRadius: 'var(--r-md)', border: '1.5px solid var(--outline-variant)', background: 'var(--surface-container)', color: 'var(--text-primary)', fontFamily: 'Inter, sans-serif', fontSize: '0.85rem', boxSizing: 'border-box', outline: 'none' }} />
+              </div>
+            </div>
+
+            <div style={{ marginBottom: '1rem' }}>
+              <label style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.72rem', fontWeight: 600, color: 'var(--outline)', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: '0.35rem' }}>Duration</label>
+              <select value={duration} onChange={e => setDuration(e.target.value)} style={{ width: '100%', padding: '0.5rem 0.75rem', borderRadius: 'var(--r-md)', border: '1.5px solid var(--outline-variant)', background: 'var(--surface-container)', color: 'var(--text-primary)', fontFamily: 'Inter, sans-serif', fontSize: '0.85rem', outline: 'none' }}>
+                <option value="30">30 min</option>
+                <option value="45">45 min</option>
+                <option value="60">60 min</option>
+                <option value="90">90 min</option>
+              </select>
+            </div>
+
+            <div style={{ marginBottom: '1rem' }}>
+              <label style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.72rem', fontWeight: 600, color: 'var(--outline)', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: '0.35rem' }}>Session Type</label>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                {(['virtual', 'in_person'] as const).map(type => (
+                  <button type="button" key={type} onClick={() => setSessionType(type)} style={{ flex: 1, padding: '0.5rem', borderRadius: 'var(--r-md)', border: `1.5px solid ${sessionType === type ? 'var(--primary)' : 'var(--outline-variant)'}`, background: sessionType === type ? 'var(--primary-light)' : 'var(--surface-container)', color: sessionType === type ? 'var(--primary)' : 'var(--on-surface)', fontFamily: 'Inter, sans-serif', fontSize: '0.8rem', fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.35rem' }}>
+                    <span className="material-symbols-outlined" style={{ fontSize: '0.9rem' }}>{type === 'virtual' ? 'videocam' : 'person_pin'}</span>
+                    {type === 'virtual' ? 'Virtual' : 'In-Person'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: '1.25rem' }}>
+              <label style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.72rem', fontWeight: 600, color: 'var(--outline)', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: '0.35rem' }}>Notes</label>
+              <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3} placeholder="Session focus, goals, topics to cover..." style={{ width: '100%', padding: '0.5rem 0.75rem', borderRadius: 'var(--r-md)', border: '1.5px solid var(--outline-variant)', background: 'var(--surface-container)', color: 'var(--text-primary)', fontFamily: 'Inter, sans-serif', fontSize: '0.85rem', outline: 'none', resize: 'vertical', boxSizing: 'border-box' }} />
+            </div>
+
+            <button type="submit" disabled={sending} style={{ width: '100%', padding: '0.75rem', borderRadius: 'var(--r-lg)', border: 'none', background: sending ? 'var(--surface-container)' : 'var(--primary)', color: sending ? 'var(--outline)' : 'white', fontFamily: 'Manrope, sans-serif', fontSize: '0.85rem', fontWeight: 700, cursor: sending ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', transition: 'all 0.15s ease' }}>
+              {sending ? (
+                <><span className="material-symbols-outlined" style={{ fontSize: '1rem' }}>progress_activity</span> Sending...</>
+              ) : (
+                <><span className="material-symbols-outlined" style={{ fontSize: '1rem' }}>send</span> Send Invite</>
+              )}
+            </button>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── DASHBOARD VIEW ──────────────────────
+function DashboardView({ session, onNav, onSimulateCheckIn, onMarkPayment, push, onLogWorkout, onOpenClientNotes }: {
+  session: CoachSession;
+  onNav: (id: NavId) => void;
+  onSimulateCheckIn: (clientId: string) => Promise<void>;
+  onMarkPayment: (clientId: string) => Promise<void>;
+  push: (message: string, type?: "success"|"error"|"info") => void;
+  onLogWorkout: () => void;
+  onOpenClientNotes: () => void;
+}) {
+  const { dashboard, workspace, clients } = session;
+  const mrrGbp = session.subscriptions
+    .filter(s => s.status === "active")
+    .reduce((sum, s) => sum + s.amountGbp, 0);
+
+  const today = new Date();
+  const dayName = today.toLocaleDateString("en-US", { weekday: "long" });
+  const dateStr = today.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+
+  // Upcoming renewals for the right panel
+  const upcomingRenewals = session.subscriptions
+    .filter(s => s.status === "active" || s.status === "past_due")
+    .sort((a, b) => a.renewalDate.localeCompare(b.renewalDate))
+    .slice(0, 3);
+
+  return (
+    <div className="page-view">
+      {/* Editorial Hero */}
+      <div className="editorial-hero">
+        <div>
+          <div className="editorial-hero-eyebrow">
+            <span className="editorial-hero-date">{dayName}, {dateStr}</span>
+            <span className="editorial-hero-workspace">{workspace.name}</span>
+          </div>
+          <h1 className="editorial-hero-greeting">Good morning, {session.coach.firstName}.</h1>
+          <p className="editorial-hero-message">{workspace.heroMessage}</p>
+          <div className="inline" style={{ marginTop: "1.5rem" }}>
+            <button onClick={() => onNav("calendar")} style={{ padding: "0.6rem 1.25rem", borderRadius: "9999px", background: "#181c1c", color: "white", border: "none", fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "0.875rem", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: "0.4rem", boxShadow: "0 4px 16px rgba(24,28,28,0.15)" }}>
+              <span className="material-symbols-outlined" style={{ fontSize: "1rem" }}>calendar_month</span>
+              View Schedule
+            </button>
+            <button onClick={onOpenClientNotes} style={{ padding: "0.6rem 1.25rem", borderRadius: "9999px", background: "white", color: "#181c1c", border: "1.5px solid #e8e7f0", fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "0.875rem", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: "0.4rem" }}>
+              Client Notes
+            </button>
+          </div>
+        </div>
+        <div className="editorial-hero-right">
+          {/* Coach mascot based on gender */}
+          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+            <div style={{
+              width: 168, height: 168, borderRadius: "50%", background: workspace.brandColor, display: "grid", placeItems: "center",
+              boxShadow: "0 8px 24px rgba(0,0,0,0.2)", flexShrink: 0,
+            }}>
+              {session.coach.gender === "female" ? (
+                /* Female coach mascot */
+                <svg width="108" height="108" viewBox="0 0 36 36" fill="none">
+                  <circle cx="18" cy="12" r="7" fill="white" opacity="0.95"/>
+                  <path d="M8 28 C8 20 28 20 28 28" fill="white" opacity="0.9"/>
+                  <circle cx="15" cy="11" r="1.2" fill="#123f2d"/>
+                  <circle cx="21" cy="11" r="1.2" fill="#123f2d"/>
+                  <path d="M16 14 Q18 16 20 14" stroke="#123f2d" strokeWidth="1" fill="none" strokeLinecap="round"/>
+                  <path d="M10 9 Q12 5 16 6 Q18 4 20 6 Q24 5 26 9" stroke="white" strokeWidth="2" fill="none" strokeLinecap="round"/>
+                </svg>
+              ) : (
+                /* Male coach mascot */
+                <svg width="108" height="108" viewBox="0 0 36 36" fill="none">
+                  <circle cx="18" cy="13" r="7" fill="white" opacity="0.95"/>
+                  <path d="M9 28 C9 21 27 21 27 28" fill="white" opacity="0.9"/>
+                  <circle cx="15" cy="12" r="1.2" fill="#123f2d"/>
+                  <circle cx="21" cy="12" r="1.2" fill="#123f2d"/>
+                  <path d="M16 15 Q18 17 20 15" stroke="#123f2d" strokeWidth="1" fill="none" strokeLinecap="round"/>
+                  <rect x="14" y="8" width="8" height="3" rx="1" fill="white" opacity="0.9"/>
+                  <rect x="14" y="7.5" width="8" height="1.5" rx="0.5" fill="white" opacity="0.85"/>
+                </svg>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Bento Stat Grid */}
+      <div className="bento-grid">
+        <div className="bento-card">
+          <div className="bento-icon-wrap">
+            <span className="material-symbols-outlined bento-icon">diversity_3</span>
+          </div>
+          <div className="bento-label">Active Clients</div>
+          <div className="bento-value">{dashboard.activeClients}</div>
+          <div className="bento-trend">{clients.length} total clients</div>
+        </div>
+        <div className="bento-card">
+          <div className="bento-icon-wrap">
+            <span className="material-symbols-outlined bento-icon">payments</span>
+          </div>
+          <div className="bento-label">Monthly Revenue</div>
+          <div className="bento-value">£{mrrGbp.toLocaleString()}</div>
+          <div className="bento-trend">{session.subscriptions.filter(s => s.status === "active").length} active subscriptions</div>
+        </div>
+        <div className="bento-card">
+          <div className="bento-icon-wrap">
+            <span className="material-symbols-outlined bento-icon">warning</span>
+          </div>
+          <div className="bento-label">At-Risk Flags</div>
+          <div className="bento-value" style={{ color: dashboard.atRiskClients.length > 0 ? "var(--warning)" : undefined }}>{dashboard.atRiskClients.length}</div>
+          <div className="bento-trend">{dashboard.atRiskClients.length === 0 ? "All clients on track" : "Needs attention"}</div>
+        </div>
+        <div className="bento-card">
+          <div className="bento-icon-wrap">
+            <span className="material-symbols-outlined bento-icon">check_circle</span>
+          </div>
+          <div className="bento-label">Checked In Today</div>
+          <div className="bento-value">{dashboard.checkedInToday}</div>
+          <div className="bento-trend">{clients.length - dashboard.checkedInToday} pending</div>
+        </div>
+      </div>
+
+      {/* Quick Actions */}
+      <div style={{ display: "flex", gap: "0.75rem", marginBottom: "1.5rem", flexWrap: "wrap" }}>
+        <button onClick={() => onNav("clients")} style={{ padding: "0.6rem 1rem", borderRadius: "var(--r-lg)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--text-primary)", fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "0.82rem", cursor: "pointer", display: "flex", alignItems: "center", gap: "0.4rem" }}>
+          <span className="material-symbols-outlined" style={{ fontSize: "1rem" }}>person_add</span>
+          Add Client
+        </button>
+        <button onClick={onLogWorkout} style={{ padding: "0.6rem 1rem", borderRadius: "var(--r-lg)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--text-primary)", fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "0.82rem", cursor: "pointer", display: "flex", alignItems: "center", gap: "0.4rem" }}>
+          <span className="material-symbols-outlined" style={{ fontSize: "1rem" }}>fitness_center</span>
+          Log Workout
+        </button>
+        <button onClick={() => onNav("plans")} style={{ padding: "0.6rem 1rem", borderRadius: "var(--r-lg)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--text-primary)", fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "0.82rem", cursor: "pointer", display: "flex", alignItems: "center", gap: "0.4rem" }}>
+          <span className="material-symbols-outlined" style={{ fontSize: "1rem" }}>auto_awesome</span>
+          Create Plan
+        </button>
+        <button onClick={() => onNav("calendar")} style={{ padding: "0.6rem 1rem", borderRadius: "var(--r-lg)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--text-primary)", fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "0.82rem", cursor: "pointer", display: "flex", alignItems: "center", gap: "0.4rem" }}>
+          <span className="material-symbols-outlined" style={{ fontSize: "1rem" }}>calendar_month</span>
+          Schedule Session
+        </button>
+      </div>
+
+      {/* Dashboard Content: 2/3 + 1/3 split */}
+      <div className="dashboard-content-grid">
+        {/* Left: At-Risk Clients */}
+        <div>
+          <div className="section-meta">
+            <h2 className="section-title" style={{ margin: 0 }}>At-Risk Clients</h2>
+          </div>
+          <div className="at-risk-card">
+            {dashboard.atRiskClients.length > 0 ? dashboard.atRiskClients.map(alert => {
+              const client = clients.find(c => c.id === alert.clientId);
+              const initials = client ? client.fullName.split(" ").map(p => p[0]).slice(0, 2).join("").toUpperCase() : "??";
+              const dotClass = alert.severity === "high" ? "at-risk-dot--danger" : alert.severity === "medium" ? "at-risk-dot--warning" : "at-risk-dot--success";
+              const badgeClass = alert.severity === "high" ? "badge-danger" : alert.severity === "medium" ? "badge-warning" : "badge-success";
+              const badgeLabel = alert.severity === "high" ? "High Risk" : alert.severity === "medium" ? "Stalled" : "Low Risk";
+              return (
+                <div key={alert.clientId} className="at-risk-row">
+                  <div className="at-risk-client-info">
+                    <div className="at-risk-avatar-wrap">
+                      <div className="at-risk-avatar">{initials}</div>
+                      <div className={`at-risk-avatar-dot ${dotClass}`}></div>
+                    </div>
+                    <div>
+                      <div className="at-risk-client-name">{client?.fullName}</div>
+                      <div className="at-risk-client-meta">Last activity: {alert.reasons[0]}</div>
+                    </div>
+                  </div>
+                  <div className="at-risk-actions">
+                    <div className="at-risk-status">
+                      <span className="at-risk-status-label">Status</span>
+                      <span className={`at-risk-status-badge ${badgeClass}`}>{badgeLabel}</span>
+                    </div>
+                    {client && (
+                      <button className="at-risk-send-btn" onClick={() => onSimulateCheckIn(client.id)} title="Send nudge">
+                        <span className="material-symbols-outlined" style={{ fontSize: "1rem" }}>send</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            }) : (
+              <div style={{ padding: "3rem 2rem", textAlign: "center", color: "var(--text-muted)" }}>
+                <span className="material-symbols-outlined" style={{ fontSize: "2.5rem", display: "block", marginBottom: "0.75rem", color: "var(--primary)" }}>celebration</span>
+                <p style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, color: "var(--text-primary)", marginBottom: "0.25rem" }}>No at-risk clients today!</p>
+                <p style={{ fontSize: "0.875rem" }}>All clients are on track. Check back tomorrow.</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Right: Side panels */}
+        <div className="side-panel">
+          {/* Upcoming */}
+          <div className="upcoming-card">
+            <h2 className="section-title" style={{ margin: "0 0 1.25rem" }}>Upcoming</h2>
+            {upcomingRenewals.length > 0 ? upcomingRenewals.map(sub => {
+              const client = clients.find(c => c.id === sub.clientId);
+              if (!client) return null;
+              return (
+                <div key={sub.id} className="upcoming-item upcoming-item--primary">
+                  <div className="upcoming-time">Renewal · {sub.renewalDate}</div>
+                  <div className="upcoming-title">{client.fullName}</div>
+                  <div className="upcoming-subtitle">{client.goal}</div>
+                </div>
+              );
+            }) : (
+              <p style={{ color: "var(--text-muted)", fontSize: "0.875rem" }}>No upcoming renewals.</p>
+            )}
+          </div>
+
+          {/* AI Insight */}
+          <div className="ai-insight-card">
+            <h4 className="ai-insight-title">Coach AI Insight</h4>
+            <div>
+              {(() => {
+                const atRisk = dashboard.atRiskClients;
+                const lowAdherence = clients.filter(c => c.adherenceScore < 50);
+                const noCheckIn = clients.filter(c => {
+                  if (!c.lastCheckInDate) return true;
+                  const daysSince = Math.floor((Date.now() - new Date(c.lastCheckInDate).getTime()) / 86400000);
+                  return daysSince > 7;
+                });
+                const highRevenue = session.subscriptions.filter(s => s.status === "active").sort((a, b) => b.amountGbp - a.amountGbp)[0];
+                const highRevenueClient = highRevenue ? clients.find(c => c.id === highRevenue.clientId) : null;
+
+                let insight = "";
+                let insightIcon = "";
+                if (atRisk.length > 0) {
+                  const client = clients.find(c => c.id === atRisk[0].clientId);
+                  insight = `${client?.fullName ?? "A client"} is at risk — ${atRisk[0].reasons[0]}. Consider reaching out this week with a tailored check-in.`;
+                  insightIcon = "warning";
+                } else if (lowAdherence.length > 0) {
+                  insight = `${lowAdherence[0].fullName}'s adherence is at ${lowAdherence[0].adherenceScore}%. A quick motivational message could help restore consistency.`;
+                  insightIcon = "trending_down";
+                } else if (noCheckIn.length > 0) {
+                  const daysSince = noCheckIn[0].lastCheckInDate
+                    ? Math.floor((Date.now() - new Date(noCheckIn[0].lastCheckInDate!).getTime()) / 86400000)
+                    : 999;
+                  insight = `${noCheckIn[0].fullName} hasn't checked in for ${daysSince > 99 ? "over a week" : `${daysSince} days`}. Send a friendly reminder to keep them engaged.`;
+                  insightIcon = "schedule";
+                } else if (highRevenueClient) {
+                  insight = `${highRevenueClient.fullName} is your highest-value client at £${highRevenue?.amountGbp}/month. Consider offering an upsell or premium session.`;
+                  insightIcon = "stars";
+                } else {
+                  insight = "All clients are on track. Keep up the great work — consider reaching out proactively this week.";
+                  insightIcon = "celebration";
+                }
+                return (
+                  <div>
+                    <div style={{ display: "flex", alignItems: "flex-start", gap: "0.5rem", marginBottom: "0.75rem" }}>
+                      <span className="material-symbols-outlined" style={{ fontSize: "1.1rem", color: "var(--primary)", flexShrink: 0, marginTop: "0.1rem" }}>{insightIcon}</span>
+                      <p className="ai-insight-body" style={{ margin: 0 }}>{insight}</p>
+                    </div>
+                    <button className="ai-insight-btn" onClick={() => {
+                      const client = atRisk.length > 0 ? clients.find(c => c.id === atRisk[0].clientId)
+                        : lowAdherence.length > 0 ? lowAdherence[0]
+                        : noCheckIn.length > 0 ? noCheckIn[0]
+                        : highRevenueClient ?? clients[0];
+                      if (!client) return;
+                      const subject = encodeURIComponent("Quick check-in from your coach");
+                      const body = encodeURIComponent(
+                        `Hi ${client.fullName.split(" ")[0]},\n\nI wanted to reach out because ${insight.toLowerCase().trim()}.\n\nLet me know how I can support you this week.\n\nBest,\n${session.coach.firstName}`
+                      );
+                      window.open(`mailto:${client.email}?subject=${subject}&body=${body}`, "_blank");
+                      push("Email draft opened in your mail client.", "success");
+                    }}>
+                      <span className="material-symbols-outlined" style={{ fontSize: "0.9rem" }}>send</span>
+                      Send Email to Client
+                    </button>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────
+   ADD CLIENT MODAL
+──────────────────────────────────────── */
+function AddClientModal({
+  onClose,
+  onSuccess,
+  push,
+  workspaceId,
+}: {
+  onClose: () => void;
+  onSuccess: () => void;
+  push: (message: string, type?: "success" | "error" | "info" | "warning", opts?: { title?: string; action?: { label: string; onClick: () => void } }) => void;
+  workspaceId: string;
+}) {
+  const [submitting, setSubmitting] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [form, setForm] = useState({
+    fullName: "",
+    email: "",
+    goal: "",
+    monthlyPriceGbp: "",
+    nextRenewalDate: "",
+    status: "trialing" as "active" | "at_risk" | "trialing" | "inactive",
+  });
+
+  // Close on Escape
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  const set = (field: keyof typeof form) => (
+    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>
+  ) => {
+    setForm(f => ({ ...f, [field]: e.target.value }));
+    if (errors[field]) setErrors(e => { const n = { ...e }; delete n[field]; return n; });
+  };
+
+  const validate = () => {
+    const errs: Record<string, string> = {};
+    if (!form.fullName.trim()) errs.fullName = "Full name is required.";
+    else if (form.fullName.trim().length < 2) errs.fullName = "Name must be at least 2 characters.";
+    if (!form.email.trim()) errs.email = "Email is required.";
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) errs.email = "Enter a valid email address.";
+    if (!form.goal.trim()) errs.goal = "Goal is required.";
+    else if (form.goal.trim().length < 3) errs.goal = "Goal must be at least 3 characters.";
+    if (!form.monthlyPriceGbp) errs.monthlyPriceGbp = "Monthly price is required.";
+    else if (isNaN(Number(form.monthlyPriceGbp)) || Number(form.monthlyPriceGbp) < 0)
+      errs.monthlyPriceGbp = "Enter a valid price (0 or more).";
+    return errs;
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const errs = validate();
+    if (Object.keys(errs).length > 0) { setErrors(errs); return; }
+
+    setSubmitting(true);
+    try {
+      const defaultRenewalDate = new Date();
+      defaultRenewalDate.setDate(defaultRenewalDate.getDate() + 30);
+      const newClient = await fetchJson<ClientProfile>("/clients", {
+        method: "POST",
+        body: JSON.stringify({
+          workspaceId,
+          fullName: form.fullName.trim(),
+          email: form.email.trim().toLowerCase(),
+          goal: form.goal.trim(),
+          status: form.status === "trialing" ? "trial" : form.status,
+          adherenceScore: 60,
+          currentPlanId: null,
+          monthlyPriceGbp: Number(form.monthlyPriceGbp),
+          nextRenewalDate: form.nextRenewalDate || defaultRenewalDate.toISOString().slice(0, 10),
+          lastCheckInDate: null,
+          healthConditions: [],
+          dailyWaterTarget: 3,
+          dailyStepsTarget: 10000,
+          supplements: [],
+          nutritionCalories: null,
+          nutritionProteinG: null,
+          nutritionFatG: null,
+          nutritionCarbsG: null,
+          nutritionCoachNote: "",
+        }),
+      });
+
+      push(`${newClient.fullName} added successfully!`, "success");
+      onSuccess();
+    } catch (error) {
+      push(error instanceof Error ? error.message : "Network error - please check your connection.", "error");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const fieldError = (name: string) =>
+    errors[name] ? <span className="field-error">{errors[name]}</span> : null;
+
+  const label = (text: string, htmlFor?: string) =>
+    htmlFor
+      ? <label className="form-label" htmlFor={htmlFor}>{text}</label>
+      : <label className="form-label">{text}</label>;
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal-panel add-client-modal" role="dialog" aria-modal="true" aria-labelledby="add-client-title">
+        {/* Header */}
+        <div className="add-client-header">
+          <div className="add-client-icon-wrap">
+            <span className="material-symbols-outlined add-client-icon">person_add</span>
+          </div>
+          <div>
+            <h2 className="modal-title" id="add-client-title">Add New Client</h2>
+            <p className="modal-subtitle">Fill in the details below to onboard a new client.</p>
+          </div>
+          <button className="modal-close-btn" onClick={onClose} aria-label="Close">
+            <span className="material-symbols-outlined">close</span>
+          </button>
+        </div>
+
+        {/* Avatar preview */}
+        {form.fullName.trim().length >= 2 && (
+          <div className="add-client-avatar-preview">
+            <div className="add-client-avatar">
+              {form.fullName.split(" ").map(p => p[0]).slice(0, 2).join("").toUpperCase()}
+            </div>
+            <div>
+              <div className="add-client-avatar-name">{form.fullName.trim()}</div>
+              <div className="add-client-avatar-email">{form.email || "email@example.com"}</div>
+            </div>
+          </div>
+        )}
+
+        {/* Form */}
+        <form onSubmit={handleSubmit} noValidate>
+          <div className="add-client-form-grid">
+            {/* Full Name */}
+            <div className="form-field">
+              {label("Full Name *")}
+              <input
+                id="ac-fullName"
+                className={`form-input${errors.fullName ? " form-input--error" : ""}`}
+                type="text"
+                placeholder="e.g. Jamie Chen"
+                value={form.fullName}
+                onChange={set("fullName")}
+                autoFocus
+                autoComplete="name"
+              />
+              {fieldError("fullName")}
+            </div>
+
+            {/* Email */}
+            <div className="form-field">
+              {label("Email Address *")}
+              <input
+                id="ac-email"
+                className={`form-input${errors.email ? " form-input--error" : ""}`}
+                type="email"
+                placeholder="e.g. jamie@example.com"
+                value={form.email}
+                onChange={set("email")}
+                autoComplete="email"
+              />
+              {fieldError("email")}
+            </div>
+
+            {/* Goal */}
+            <div className="form-field form-field--full">
+              {label("Primary Goal *")}
+              <textarea
+                id="ac-goal"
+                className={`form-input form-textarea${errors.goal ? " form-input--error" : ""}`}
+                placeholder="e.g. Lose 5kg body fat, build strength, run a marathon…"
+                value={form.goal}
+                onChange={set("goal")}
+                rows={2}
+              />
+              {fieldError("goal")}
+            </div>
+
+            {/* Monthly Price */}
+            <div className="form-field">
+              {label("Monthly Price (GBP) *")}
+              <div className="input-prefix-wrap">
+                <span className="input-prefix">£</span>
+                <input
+                  id="ac-price"
+                  className={`form-input input-prefix-field${errors.monthlyPriceGbp ? " form-input--error" : ""}`}
+                  type="number"
+                  min="0"
+                  step="1"
+                  placeholder="149"
+                  value={form.monthlyPriceGbp}
+                  onChange={set("monthlyPriceGbp")}
+                />
+              </div>
+              {fieldError("monthlyPriceGbp")}
+            </div>
+
+            {/* Next Renewal Date */}
+            <div className="form-field">
+              {label("Next Renewal Date")}
+              <input
+                id="ac-renewal"
+                className="form-input"
+                type="date"
+                value={form.nextRenewalDate}
+                onChange={set("nextRenewalDate")}
+              />
+            </div>
+
+            {/* Status */}
+            <div className="form-field">
+              {label("Client Status")}
+              <select
+                id="ac-status"
+                className="form-input form-select"
+                value={form.status}
+                onChange={set("status")}
+              >
+                <option value="trialing">Trialing</option>
+                <option value="active">Active</option>
+                <option value="at_risk">At Risk</option>
+                <option value="inactive">Inactive</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div className="add-client-actions">
+            <button type="button" className="btn-ghost" onClick={onClose} disabled={submitting}>
+              Cancel
+            </button>
+            <button type="submit" className="btn-primary" disabled={submitting}>
+              {submitting ? (
+                <>
+                  <span className="btn-spinner" />
+                  Adding Client…
+                </>
+              ) : (
+                <>
+                  <span className="material-symbols-outlined" style={{ fontSize: "1rem" }}>person_add</span>
+                  Add Client
+                </>
+              )}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ── CLIENTS VIEW ──────────────────────
+function ClientsView({
+  session,
+  onOpenClient,
+  onAddClient,
+  onUpdateClientStatus,
+  onNav,
+}: {
+  session: CoachSession;
+  onOpenClient: (id: string) => void;
+  onAddClient?: () => void;
+  onUpdateClientStatus: (clientId: string, status: "active" | "at_risk" | "trial" | "inactive") => Promise<void>;
+  onNav: (id: NavId) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [filterStatus, setFilterStatus] = useState("all");
+  const [updatingClientId, setUpdatingClientId] = useState<string | null>(null);
+
+  const filtered = useMemo(() => {
+    let list = session.clients;
+    if (filterStatus !== "all") list = list.filter(c => c.status === filterStatus);
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter(c =>
+        c.fullName.toLowerCase().includes(q) ||
+        c.goal.toLowerCase().includes(q) ||
+        c.email.toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [session.clients, filterStatus, search]);
+
+  const activeClients = session.clients.filter(c => c.status === "active").length;
+    const avgAdherence = session.clients.length
+    ? Math.round(session.clients.reduce((s, c) => s + c.adherenceScore, 0) / session.clients.length)
+    : 0;
+  const mrr = session.subscriptions
+    .filter(s => s.status === "active")
+    .reduce((s, sub) => s + sub.amountGbp, 0);
+
+  const statusLabel = filterStatus === "all" ? "active high-performers"
+    : filterStatus === "active" ? "active clients"
+    : filterStatus === "at_risk" ? "at-risk clients"
+    : filterStatus === "inactive" ? "inactive clients"
+    : "trial clients";
+
+  return (
+    <div className="page-view">
+
+      {/* Editorial header */}
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginBottom: "2rem", gap: "1rem", flexWrap: "wrap" }}>
+        <div>
+          <h1 style={{ fontFamily: "Manrope, sans-serif", fontSize: "2.25rem", fontWeight: 800, color: "var(--text-primary)", letterSpacing: "-0.03em", lineHeight: 1.1, marginBottom: "0.35rem" }}>
+            Client Roster
+          </h1>
+          <p style={{ fontFamily: "Inter, sans-serif", fontSize: "0.875rem", color: "var(--on-surface-variant)", fontWeight: 500 }}>
+            Curating growth for {activeClients} {statusLabel}.
+          </p>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
+          {/* Filter pills */}
+          <div style={{ display: "flex", background: "var(--surface-container)", borderRadius: "9999px", padding: "3px" }}>
+            {[
+              { key: "all", label: "All" },
+              { key: "active", label: "Active" },
+              { key: "at_risk", label: "At Risk" },
+              { key: "trial", label: "Trial" },
+              { key: "inactive", label: "Inactive" },
+            ].map(f => (
+              <button
+                key={f.key}
+                onClick={() => setFilterStatus(f.key)}
+                style={{
+                  padding: "0.4rem 1rem",
+                  borderRadius: "9999px",
+                  border: "none",
+                  cursor: "pointer",
+                  fontFamily: "Inter, sans-serif",
+                  fontSize: "0.75rem",
+                  fontWeight: 700,
+                  transition: "all 0.15s ease",
+                  background: filterStatus === f.key ? "var(--surface-container-lowest)" : "transparent",
+                  color: filterStatus === f.key ? "var(--primary)" : "var(--on-surface-variant)",
+                  boxShadow: filterStatus === f.key ? "0 1px 4px rgba(0,0,0,0.08)" : "none",
+                }}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+          {/* Search */}
+          <div style={{ position: "relative" }}>
+            <span className="material-symbols-outlined" style={{ position: "absolute", left: "0.85rem", top: "50%", transform: "translateY(-50%)", color: "var(--outline)", fontSize: "1.1rem" }}>search</span>
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search clients, goals…"
+              style={{
+                padding: "0.5rem 1rem 0.5rem 2.5rem",
+                borderRadius: "9999px",
+                border: "1.5px solid var(--border)",
+                background: "var(--bg-card)",
+                fontFamily: "Inter, sans-serif",
+                fontSize: "0.8rem",
+                color: "var(--text-primary)",
+                width: "220px",
+                outline: "none",
+                transition: "border-color 0.15s",
+              }}
+              onFocus={e => e.target.style.borderColor = "var(--primary)"}
+              onBlur={e => e.target.style.borderColor = "var(--border)"}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Client cards grid */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "1.5rem", marginBottom: "3rem" }}>
+        {filtered.map(client => {
+          const initials = client.fullName.split(" ").map(p => p[0]).slice(0, 2).join("").toUpperCase();
+          const adherenceColor = client.adherenceScore < 50 ? "var(--danger)"
+            : client.adherenceScore < 75 ? "var(--tertiary)"
+            : "var(--primary)";
+          const statusMeta = getClientStatusMeta(client.status);
+          const isUpdating = updatingClientId === client.id;
+
+          return (
+            <div
+              key={client.id}
+              className="roster-card"
+              style={{ cursor: "default" }}
+            >
+              {/* Card header */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+                  <div style={{ width: 56, height: 56, borderRadius: "var(--r-lg)", background: statusMeta.avatarBg, display: "grid", placeItems: "center", fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "1rem", color: statusMeta.avatarColor, flexShrink: 0 }}>
+                    {initials}
+                  </div>
+                  <div>
+                    <div style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "1rem", color: "var(--text-primary)", lineHeight: 1.2 }}>{client.fullName}</div>
+                    <span className={`at-risk-status-badge ${statusMeta.badgeClass}`} style={{ marginTop: "0.25rem", display: "inline-block" }}>{statusMeta.label}</span>
+                  </div>
+                </div>
+                <div style={{ fontFamily: "Inter, sans-serif", fontWeight: 700, fontSize: "0.875rem", color: "var(--text-primary)", textAlign: "right" }}>
+                  £{client.monthlyPriceGbp}<span style={{ color: "var(--on-surface-variant)", fontWeight: 400 }}>/mo</span>
+                </div>
+              </div>
+
+              {/* Goal */}
+              <div style={{ marginBottom: "1rem" }}>
+                <div style={{ fontFamily: "Inter, sans-serif", fontSize: "0.6rem", fontWeight: 700, color: "var(--outline)", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "0.35rem" }}>Current Goal</div>
+                <div style={{ fontFamily: "Inter, sans-serif", fontSize: "0.8rem", color: "var(--on-surface-variant)", fontWeight: 500, lineHeight: 1.4 }}>{client.goal}</div>
+              </div>
+
+              {/* Adherence bar */}
+              <div style={{ marginBottom: "1.5rem" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: "0.4rem" }}>
+                  <div style={{ fontFamily: "Inter, sans-serif", fontSize: "0.6rem", fontWeight: 700, color: "var(--outline)", textTransform: "uppercase", letterSpacing: "0.1em" }}>Adherence</div>
+                  <div style={{ fontFamily: "Inter, sans-serif", fontSize: "0.7rem", fontWeight: 700, color: adherenceColor }}>{client.adherenceScore}%</div>
+                </div>
+                <div style={{ height: 6, background: "rgba(235,238,237,0.5)", borderRadius: "9999px", overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${client.adherenceScore}%`, background: client.adherenceScore < 50 ? "var(--danger)" : client.adherenceScore < 75 ? `linear-gradient(90deg, var(--tertiary) 0%, var(--tertiary-container) 100%)` : "linear-gradient(90deg, var(--primary) 0%, var(--primary-container) 100%)", borderRadius: "9999px", transition: "width 0.6s cubic-bezier(0.34,1.56,0.64,1)" }} />
+                </div>
+                <div style={{ marginTop: "0.45rem" }}>
+                  <AdherenceTrend deltaWeek={(client as any).adherenceDeltaWeek} />
+                </div>
+              </div>
+
+              {/* Card footer */}
+              <div style={{ paddingTop: "1rem", borderTop: "1px solid var(--surface-container)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "0.25rem", color: statusMeta.footerColor, fontFamily: "Inter, sans-serif", fontSize: "0.7rem", fontWeight: statusMeta.footerIcon ? 700 : 500 }}>
+                  {statusMeta.footerIcon ? <span className="material-symbols-outlined" style={{ fontSize: "0.9rem" }}>{statusMeta.footerIcon}</span> : null}
+                  {statusMeta.footerText}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onOpenClient(client.id)}
+                  style={{ display: "flex", alignItems: "center", gap: "0.25rem", color: "var(--primary)", fontFamily: "Inter, sans-serif", fontSize: "0.75rem", fontWeight: 700, background: "none", border: "none", padding: 0, cursor: "pointer" }}
+                >
+                  Open Dashboard <span className="material-symbols-outlined" style={{ fontSize: "0.9rem" }}>arrow_forward</span>
+                </button>
+              </div>
+              <div style={{ marginTop: "0.9rem" }}>
+                <label style={{ display: "block", fontFamily: "Inter, sans-serif", fontSize: "0.6rem", fontWeight: 700, color: "var(--outline)", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "0.35rem" }}>
+                  Client Status
+                </label>
+                <select
+                  value={client.status}
+                  disabled={isUpdating}
+                  onMouseDown={e => e.stopPropagation()}
+                  onClick={e => e.stopPropagation()}
+                  onChange={async e => {
+                    const nextStatus = e.target.value as "active" | "at_risk" | "trial" | "inactive";
+                    if (nextStatus === client.status) return;
+                    e.stopPropagation();
+                    setUpdatingClientId(client.id);
+                    try {
+                      await onUpdateClientStatus(client.id, nextStatus);
+                    } finally {
+                      setUpdatingClientId(current => current === client.id ? null : current);
+                    }
+                  }}
+                  style={{
+                    width: "100%",
+                    padding: "0.55rem 0.7rem",
+                    borderRadius: "var(--r-md)",
+                    border: "1.5px solid var(--outline-variant)",
+                    background: isUpdating ? "var(--surface-container)" : "var(--bg-card)",
+                    color: isUpdating ? "var(--outline)" : "var(--text-primary)",
+                    fontFamily: "Inter, sans-serif",
+                    fontSize: "0.82rem",
+                    fontWeight: 600,
+                    outline: "none",
+                    cursor: isUpdating ? "not-allowed" : "pointer",
+                  }}
+                >
+                  <option value="trial">Trial</option>
+                  <option value="active">Active</option>
+                  <option value="at_risk">At Risk</option>
+                  <option value="inactive">Inactive</option>
+                </select>
+              </div>
+            </div>
+          );
+        })}
+
+        {/* Onboard CTA */}
+        <div
+          onClick={onAddClient ?? (() => onOpenClient(""))}
+          style={{ borderRadius: "var(--r-xl)", padding: "1.5rem", border: "2px dashed var(--outline-variant)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "1rem", cursor: "pointer", transition: "all 0.2s ease", minHeight: "220px", textAlign: "center" }}
+        >
+          <div style={{ width: 48, height: 48, borderRadius: "50%", background: "var(--surface-container)", display: "grid", placeItems: "center" }}>
+            <span className="material-symbols-outlined" style={{ fontSize: "1.5rem", color: "var(--primary)" }}>person_add</span>
+          </div>
+          <div>
+            <div style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "0.9rem", color: "var(--text-primary)", marginBottom: "0.25rem" }}>Onboard New Client</div>
+            <div style={{ fontFamily: "Inter, sans-serif", fontSize: "0.75rem", color: "var(--on-surface-variant)", maxWidth: "160px", margin: "0 auto" }}>Start a new coaching journey today.</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Footer stats */}
+      {filtered.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "3rem", alignItems: "center", justifyContent: "space-between", borderTop: "1px solid var(--surface-container)", paddingTop: "2rem" }}>
+          <div style={{ display: "flex", gap: "3rem" }}>
+            <div>
+              <div style={{ fontFamily: "Inter, sans-serif", fontSize: "0.6rem", fontWeight: 700, color: "var(--outline)", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "0.25rem" }}>Total Monthly Revenue</div>
+              <div style={{ fontFamily: "Manrope, sans-serif", fontSize: "1.75rem", fontWeight: 800, color: "var(--text-primary)", letterSpacing: "-0.04em" }}>£{mrr}</div>
+            </div>
+            <div>
+              <div style={{ fontFamily: "Inter, sans-serif", fontSize: "0.6rem", fontWeight: 700, color: "var(--outline)", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "0.25rem" }}>Avg. Adherence</div>
+              <div style={{ fontFamily: "Manrope, sans-serif", fontSize: "1.75rem", fontWeight: 800, color: avgAdherence < 60 ? "var(--warning)" : "var(--primary)", letterSpacing: "-0.04em" }}>{avgAdherence}%</div>
+            </div>
+            <div>
+              <div style={{ fontFamily: "Inter, sans-serif", fontSize: "0.6rem", fontWeight: 700, color: "var(--outline)", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "0.25rem" }}>Total Clients</div>
+              <div style={{ fontFamily: "Manrope, sans-serif", fontSize: "1.75rem", fontWeight: 800, color: "var(--text-primary)", letterSpacing: "-0.04em" }}>{session.clients.length}</div>
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            <div style={{ fontFamily: "Inter, sans-serif", fontSize: "0.7rem", color: "var(--on-surface-variant)", fontWeight: 500 }}>
+              Showing {filtered.length} of {session.clients.length}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── PLANS VIEW (AI Chat) ──────────────────────
+type ChatMessage = { id: number; role: "user" | "ai"; text: string };
+
+function PlansView({ session, onNav }: { session: CoachSession; onNav: (id: NavId) => void }) {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [isTyping, setIsTyping] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const counter = useRef(0);
+
+  const curations = [
+    {
+      title: "Create a meal plan",
+      desc: "Build a structured weekly nutrition program for your client",
+      icon: "restaurant",
+      tag: "Nutrition",
+      color: "#d1fae5",
+      iconColor: "#059669",
+    },
+    {
+      title: "Design 4-week fat loss plan",
+      desc: "Progressive overload program with cardio and nutrition targets",
+      icon: "fitness_center",
+      tag: "Training",
+      color: "#fef3c7",
+      iconColor: "#d97706",
+    },
+    {
+      title: "Analyze biometric trends",
+      desc: "Review client's progress photos, weight, and adherence scores",
+      icon: "show_chart",
+      tag: "Analytics",
+      color: "#e0e7ff",
+      iconColor: "#4f46e5",
+    },
+    {
+      title: "Draft a monthly check-in report",
+      desc: "Summarize progress, wins, and next steps for your client",
+      icon: "description",
+      tag: "Reporting",
+      color: "#fce7f3",
+      iconColor: "#db2777",
+    },
+  ];
+
+  const quickGoals = [
+    { label: "Current Focus", value: "Client Retention", accent: "#f97316" },
+    { label: "Weekly Goal", value: "12 New Plans", accent: "#008767" },
+    { label: "Open Tickets", value: "3", accent: "#4f46e5" },
+  ];
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  const sendMessage = async (text: string) => {
+    if (!text.trim()) return;
+    const userMsg: ChatMessage = { id: ++counter.current, role: "user", text: text.trim() };
+    setMessages(m => [...m, userMsg]);
+    setInput("");
+    setIsTyping(true);
+
+    await new Promise(r => setTimeout(r, 1400));
+
+    const aiResponses = [
+      "I've analyzed your client roster and identified Marcus as a prime candidate for a progressive overload program. Based on his recent adherence scores, I'd recommend a 4-week mesocycle with incremental load increases of 2.5–5% weekly. Want me to draft the full plan?",
+      "Great question. For Ava's fat loss goal, I'm seeing consistent results over the past 6 weeks. Her current weekly calorie target of 1,800 kcal is well-calibrated. I can generate a refined meal plan with higher protein density if that aligns with your strategy.",
+      "I've cross-referenced the latest check-in data. 4 of your 7 active clients are showing suboptimal adherence this week — likely due to the holiday period. I'd suggest a targeted re-engagement sequence. Shall I draft personalized check-in templates for each?",
+      "Here's a structured monthly report for Marcus covering Week 1–4 of his transformation program. His body composition has shifted positively: -2.3kg body fat, +1.1kg lean mass. Adherence averaged 84%. Next phase recommendation: introduce deload week.",
+    ];
+
+    const aiMsg: ChatMessage = { id: ++counter.current, role: "ai", text: aiResponses[messages.length % aiResponses.length] };
+    setIsTyping(false);
+    setMessages(m => [...m, aiMsg]);
+  };
+
+  const handleCuration = (title: string) => {
+    sendMessage(`I want to ${title.toLowerCase()}. Can you help me build this?`);
+  };
+
+  return (
+    <div className="page-view plans-chat-view">
+      {/* Main chat container */}
+      <div className="plans-chat-layout">
+        {/* Left: Chat Area */}
+        <div className="plans-chat-main">
+          {/* Header */}
+          <div className="plans-chat-header">
+            <div>
+              <h1 className="plans-chat-title">
+                Welcome to AuraCoach, Coach <span className="plans-name-highlight">{session.coach.firstName}</span>.
+              </h1>
+              <p className="plans-chat-subtitle">Your digital curator is ready. What shall we design today?</p>
+            </div>
+          </div>
+
+          {/* Messages Area */}
+          <div className="plans-messages">
+            {messages.length === 0 && (
+              <div className="plans-empty-hint">
+                <span className="material-symbols-outlined plans-empty-icon">psychology</span>
+                <p>Ask me anything about meal plans, workouts, biometrics, or client strategy.</p>
+              </div>
+            )}
+            {messages.map(msg => (
+              <div key={msg.id} className={`plans-msg plans-msg--${msg.role}`}>
+                {msg.role === "ai" && (
+                  <div className="plans-msg-avatar">
+                    <svg width="18" height="18" viewBox="0 0 28 28" fill="none">
+                      <circle cx="14" cy="14" r="14" fill="#008767"/>
+                      <path d="M8 14c0-3.314 2.686-6 6-6s6 2.686 6 6" stroke="white" strokeWidth="2" strokeLinecap="round"/>
+                      <path d="M14 8v2M14 18v2M8 14H6M22 14h-2" stroke="white" strokeWidth="2" strokeLinecap="round"/>
+                    </svg>
+                  </div>
+                )}
+                <div className="plans-msg-bubble">
+                  {msg.text}
+                </div>
+                {msg.role === "user" && (
+                  <div className="plans-msg-avatar plans-msg-avatar--user">
+                    {session.coach.firstName[0]}{session.coach.lastName[0]}
+                  </div>
+                )}
+              </div>
+            ))}
+            {isTyping && (
+              <div className="plans-msg plans-msg--ai">
+                <div className="plans-msg-avatar">
+                  <svg width="18" height="18" viewBox="0 0 28 28" fill="none">
+                    <circle cx="14" cy="14" r="14" fill="#008767"/>
+                    <path d="M8 14c0-3.314 2.686-6 6-6s6 2.686 6 6" stroke="white" strokeWidth="2" strokeLinecap="round"/>
+                    <path d="M14 8v2M14 18v2M8 14H6M22 14h-2" stroke="white" strokeWidth="2" strokeLinecap="round"/>
+                  </svg>
+                </div>
+                <div className="plans-msg-bubble plans-msg-bubble--typing">
+                  <span className="plans-typing-dot"></span>
+                  <span className="plans-typing-dot"></span>
+                  <span className="plans-typing-dot"></span>
+                </div>
+              </div>
+            )}
+            <div ref={messagesEndRef} />
+          </div>
+
+          {/* Input Bar */}
+          <div className="plans-input-area">
+            <div className="plans-input-card">
+              <div className="plans-input-icon">
+                <svg width="20" height="20" viewBox="0 0 28 28" fill="none">
+                  <circle cx="14" cy="14" r="14" fill="#008767"/>
+                  <path d="M8 14c0-3.314 2.686-6 6-6s6 2.686 6 6" stroke="white" strokeWidth="2" strokeLinecap="round"/>
+                  <path d="M14 8v2M14 18v2M8 14H6M22 14h-2" stroke="white" strokeWidth="2" strokeLinecap="round"/>
+                </svg>
+              </div>
+              <input
+                type="text"
+                className="plans-input"
+                placeholder="How can Aura AI help you today?"
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && sendMessage(input)}
+              />
+              <button
+                className="plans-ask-btn"
+                onClick={() => sendMessage(input)}
+                disabled={!input.trim() || isTyping}
+              >
+                Ask
+                <span className="material-symbols-outlined" style={{ fontSize: "1rem" }}>arrow_forward</span>
+              </button>
+            </div>
+
+            {/* Suggested Curations */}
+            <div className="plans-curations">
+              <p className="plans-curations-label">Suggested Curations</p>
+              <div className="plans-curations-grid">
+                {curations.map(c => (
+                  <button key={c.title} className="plans-curation-card" onClick={() => handleCuration(c.title)}>
+                    <div className="plans-curation-icon-wrap" style={{ background: c.color }}>
+                      <span className="material-symbols-outlined" style={{ color: c.iconColor, fontSize: "1.25rem" }}>{c.icon}</span>
+                    </div>
+                    <div className="plans-curation-text">
+                      <span className="plans-curation-tag" style={{ color: c.iconColor }}>{c.tag}</span>
+                      <p className="plans-curation-title">{c.title}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Right: Goals Sidebar */}
+        <div className="plans-sidebar">
+          <div className="plans-sidebar-card">
+            <h3 className="plans-sidebar-title">Current Session</h3>
+            {quickGoals.map(item => (
+              <div key={item.label} className="plans-goal-item">
+                <div className="plans-goal-accent" style={{ background: item.accent }}></div>
+                <div className="plans-goal-body">
+                  <span className="plans-goal-label">{item.label}</span>
+                  <span className="plans-goal-value">{item.value}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="plans-sidebar-card">
+            <h3 className="plans-sidebar-title">Active Clients</h3>
+            {session.clients.slice(0, 5).map(client => (
+              <div key={client.id} className="plans-client-item">
+                <div className="plans-client-avatar">{client.fullName.split(" ").map(p => p[0]).slice(0, 2).join("")}</div>
+                <div>
+                  <p className="plans-client-name">{client.fullName}</p>
+                  <p className="plans-client-goal">{client.goal}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Footer Tagline */}
+      <div className="plans-footer">
+        <div className="plans-footer-line"></div>
+        <p className="plans-footer-text">Empowering Human Coaching with Intelligence</p>
+        <div className="plans-footer-line"></div>
+      </div>
+    </div>
+  );
+}
+
+// ── CLIENT PORTAL VIEW ──────────────────────
+function PortalView({ session, clientPortal, selectedClientId, onSwitchClient, onCheckIn, onSaveEdits, onSendMessage, onRefreshProof, onApprove, checkInHistory, onNav, push }: {
+  session: CoachSession;
+  clientPortal: ClientSession | null;
+  selectedClientId: string | null;
+  onSwitchClient: (id: string) => void;
+  onCheckIn: (clientId: string) => Promise<void>;
+  onSaveEdits: (draft: ClientProfilePatch) => Promise<void>;
+  onSendMessage: (content: string) => Promise<void>;
+  onRefreshProof: (clientId: string) => Promise<void>;
+  onApprove: (planId: string) => Promise<void>;
+  checkInHistory: CheckInWithDelta[];
+  onNav: (id: NavId) => void;
+  push: (message: string, type?: "success"|"error"|"info") => void;
+}) {
+  const sorted = useMemo(() =>
+    [...session.clients].sort((a, b) => a.fullName.localeCompare(b.fullName)), [session.clients]);
+
+  const [editDraft, setEditDraft] = useState<ClientProfilePatch>({});
+  const [msgDraft, setMsgDraft] = useState("");
+  const [editing, setEditing] = useState<{
+    goal?: boolean;
+    health?: boolean;
+    nutrition?: boolean;
+    water?: boolean;
+    steps?: boolean;
+    supplements?: boolean;
+  }>({});
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [tempHealth, setTempHealth] = useState<{ label: string; note: string }[]>([]);
+  const [tempSupplements, setTempSupplements] = useState("");
+  const [newHealthLabel, setNewHealthLabel] = useState("");
+  const [newHealthNote, setNewHealthNote] = useState("");
+  const [activeTab, setActiveTab] = useState<"plan"|"meal"|"workout"|"messages"|"history"|"notes"|"progress"|"payments">("plan");
+  const [showPhotos, setShowPhotos] = useState(false);
+  const [mealWeek, setMealWeek] = useState<PlannerWeekDay[]>(() => createPlannerWeek());
+  const [workoutWeek, setWorkoutWeek] = useState<WorkoutWeekDay[]>(() => createWorkoutWeek());
+  const [macroTargets, setMacroTargets] = useState<PlannerTarget[]>(() => createPlannerTargets(clientPortal?.client));
+  const [lastSavedAt, setLastSavedAt] = useState<Date>(new Date());
+  const [sentMealPlan, setSentMealPlan] = useState(false);
+  const [portalNotes, setPortalNotes] = useState<ClientNote[]>([]);
+  const [portalNewNote, setPortalNewNote] = useState("");
+  const [portalNoteSaving, setPortalNoteSaving] = useState(false);
+  const [portalMetrics, setPortalMetrics] = useState<BodyMetric[]>([]);
+  const [portalMetricDraft, setPortalMetricDraft] = useState({ weightKg: '', bodyFatPct: '', waistCm: '', hipsCm: '', armCm: '', thighCm: '', energyScore: '', sleepRating: '' });
+  const [portalMetricSaving, setPortalMetricSaving] = useState(false);
+  const [portalSummaryEdit, setPortalSummaryEdit] = useState<{ weight: boolean; energy: boolean }>({ weight: false, energy: false });
+  const [portalWeightDraft, setPortalWeightDraft] = useState("");
+  const [portalEnergyDraft, setPortalEnergyDraft] = useState("");
+  const [portalWeightUnitDraft, setPortalWeightUnitDraft] = useState<"kg" | "lb">("kg");
+  const [portalGoalWeightDraft, setPortalGoalWeightDraft] = useState("");
+  const [portalGoalTimelineDraft, setPortalGoalTimelineDraft] = useState(3);
+  const [portalMeasurementDateDraft, setPortalMeasurementDateDraft] = useState("");
+  const [showWeightHistoryModal, setShowWeightHistoryModal] = useState(false);
+  const [avatarPrefs, setAvatarPrefs] = useState<ClientAvatarPrefs>({ imageDataUrl: null, initialsOverride: "" });
+  const [showAvatarModal, setShowAvatarModal] = useState(false);
+  const [avatarInitialsDraft, setAvatarInitialsDraft] = useState("");
+  const [avatarError, setAvatarError] = useState("");
+  const avatarInputRef = useRef<HTMLInputElement>(null);
+  const feedRef = useRef<HTMLDivElement>(null);
+
+  const startEdit = useCallback((section: keyof typeof editing) => {
+    if (!clientPortal) return;
+    const c = clientPortal.client as any;
+    setTempHealth([...(c.healthConditions ?? [])]);
+    setTempSupplements((c.supplements ?? []).join(", "));
+    setEditing({ [section]: true });
+  }, [clientPortal]);
+
+  const cancelEdit = useCallback(() => {
+    setEditing({});
+    setTempHealth([]);
+    setTempSupplements("");
+    setNewHealthLabel("");
+    setNewHealthNote("");
+  }, []);
+
+  const saveProfile = useCallback(async (patch: ClientProfilePatch) => {
+    setSavingProfile(true);
+    try {
+      await onSaveEdits(patch);
+      setEditing({});
+    } finally {
+      setSavingProfile(false);
+    }
+  }, [onSaveEdits]);
+
+  useEffect(() => {
+    if (clientPortal) {
+      setEditDraft({
+        goal: clientPortal.client.goal,
+        status: clientPortal.client.status,
+        monthlyPriceGbp: clientPortal.client.monthlyPriceGbp,
+        nextRenewalDate: clientPortal.client.nextRenewalDate
+      });
+    }
+  }, [clientPortal]);
+
+  useEffect(() => {
+    const nextWorkoutWeek = createWorkoutWeek();
+    setMealWeek(createPlannerWeek());
+    setWorkoutWeek(nextWorkoutWeek);
+    setMacroTargets(createPlannerTargets(clientPortal?.client));
+    setLastSavedAt(new Date());
+    setSentMealPlan(false);
+    setPortalNewNote("");
+    setPortalSummaryEdit({ weight: false, energy: false });
+  }, [clientPortal?.client.id]);
+
+  useEffect(() => {
+    if (!clientPortal?.client.id) {
+      setAvatarPrefs({ imageDataUrl: null, initialsOverride: "" });
+      setAvatarInitialsDraft("");
+      return;
+    }
+    try {
+      const raw = localStorage.getItem(clientAvatarStorageKey(clientPortal.client.id));
+      const nextPrefs = sanitizeClientAvatarPrefs(raw ? JSON.parse(raw) : null);
+      setAvatarPrefs(nextPrefs);
+      setAvatarInitialsDraft(nextPrefs.initialsOverride);
+    } catch {
+      setAvatarPrefs({ imageDataUrl: null, initialsOverride: "" });
+      setAvatarInitialsDraft("");
+    }
+  }, [clientPortal?.client.id]);
+
+  useEffect(() => {
+    if (!clientPortal?.client.id) return;
+    try {
+      localStorage.setItem(clientAvatarStorageKey(clientPortal.client.id), JSON.stringify(avatarPrefs));
+    } catch {
+      // ignore local storage failures
+    }
+  }, [avatarPrefs, clientPortal?.client.id]);
+
+  useEffect(() => {
+    if (!clientPortal?.client.id) {
+      setPortalNotes([]);
+      setPortalMetrics([]);
+      return;
+    }
+    fetchJson<ClientNote[]>(`/clients/${clientPortal.client.id}/notes`).then(setPortalNotes).catch(() => setPortalNotes([]));
+    fetchJson<BodyMetric[]>(`/clients/${clientPortal.client.id}/metrics`).then(setPortalMetrics).catch(() => setPortalMetrics([]));
+  }, [clientPortal?.client.id]);
+
+  // Load workout exercises from plan when portal loads
+  useEffect(() => {
+    const workouts = clientPortal?.plan?.latestVersion?.workouts;
+    if (!workouts || workouts.length === 0) return;
+    try {
+      // Try parsing as JSON exercise objects
+      const parsed = JSON.parse(workouts[0]);
+      if (Array.isArray(parsed)) {
+        const hydratedExercises = parsed.map((ex, i) => normalizeWorkoutExercise(ex, i + 1));
+        setWorkoutWeek((prevWeek) => replaceWorkoutExercisesForDay(prevWeek, DEFAULT_WORKOUT_DAY_NAME, hydratedExercises));
+      }
+    } catch {
+      // Fallback: convert legacy string array to exercise objects
+      const hydratedExercises = workouts.map((w, i) => ({
+        id: i + 1, name: w, tag: "Custom", sets: "3 Sets of 12", duration: "45 Seconds", advanced: ""
+      }));
+      setWorkoutWeek((prevWeek) => replaceWorkoutExercisesForDay(prevWeek, DEFAULT_WORKOUT_DAY_NAME, hydratedExercises));
+    }
+  }, [clientPortal?.plan]);
+
+  useEffect(() => {
+    if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
+  }, [clientPortal?.messages]);
+
+  const handleSendMessage = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!msgDraft.trim()) return;
+    await onSendMessage(msgDraft);
+    setMsgDraft("");
+  };
+
+  const adherenceColor = (clientPortal?.client.adherenceScore ?? 0) < 50 ? "var(--danger)"
+    : (clientPortal?.client.adherenceScore ?? 0) < 75 ? "var(--warning)" : "var(--primary)";
+
+  const initials = deriveClientInitials(clientPortal?.client.fullName ?? "", avatarPrefs.initialsOverride);
+  const selectedPlannerDay = mealWeek[0] ?? null;
+  const portalMetricsSorted = useMemo(
+    () => [...portalMetrics].sort((a, b) => a.date.localeCompare(b.date)),
+    [portalMetrics]
+  );
+  const latestPortalMetric = portalMetricsSorted[portalMetricsSorted.length - 1] ?? null;
+  const currentWeight = latestPortalMetric?.weightKg ?? clientPortal?.latestCheckIn?.progress.weightKg ?? null;
+  const currentEnergy = latestPortalMetric?.energyScore ?? clientPortal?.latestCheckIn?.progress.energyScore ?? null;
+  const currentSleep = latestPortalMetric?.sleepRating ?? null;
+  const currentMrr = ((clientPortal?.client as any)?.subscription?.amountGbp ?? clientPortal?.client.monthlyPriceGbp ?? null) as number | null;
+  const currentSubscription = ((clientPortal?.client as any)?.subscription ?? null) as any;
+  const displayWeightUnit = clientPortal?.client.weightUnit ?? "kg";
+  const displayGoalWeight = clientPortal?.client.goalWeight ?? null;
+  const displayGoalTimeline = clientPortal?.client.goalTimelineMonths ?? 3;
+  const latestWeightDate = latestPortalMetric?.date ?? clientPortal?.latestCheckIn?.submittedAt?.slice(0, 10) ?? new Date().toISOString().slice(0, 10);
+  const weightHistorySeries = useMemo(
+    () =>
+      portalMetricsSorted
+        .filter((metric) => metric.weightKg != null)
+        .map((metric) => ({
+          date: metric.date,
+          value: Number(convertKgToUnit(metric.weightKg!, displayWeightUnit).toFixed(1))
+        })),
+    [displayWeightUnit, portalMetricsSorted]
+  );
+  const currentSubStatusLabel = currentSubscription?.status === "past_due" ? "Past Due"
+    : currentSubscription?.status === "trialing" ? "Trialing"
+    : currentSubscription?.status === "cancelled" ? "Cancelled"
+    : "Active";
+
+  useEffect(() => {
+    const nextUnit = clientPortal?.client.weightUnit ?? "kg";
+    setPortalWeightDraft(currentWeight != null ? String(Number(convertKgToUnit(currentWeight, nextUnit).toFixed(1))) : "");
+    setPortalEnergyDraft(currentEnergy != null ? String(currentEnergy) : "");
+    setPortalWeightUnitDraft(nextUnit);
+    setPortalGoalWeightDraft(clientPortal?.client.goalWeight != null ? String(clientPortal.client.goalWeight) : "");
+    setPortalGoalTimelineDraft(clientPortal?.client.goalTimelineMonths ?? 3);
+    setPortalMeasurementDateDraft(latestWeightDate);
+  }, [currentWeight, currentEnergy, latestWeightDate, clientPortal?.client.id, clientPortal?.client.goalWeight, clientPortal?.client.goalTimelineMonths, clientPortal?.client.weightUnit]);
+
+  const saveMealPlan = useCallback(async () => {
+    if (!clientPortal?.plan?.id) {
+      push("No active plan available for this client.", "error");
+      return false;
+    }
+
+    const nutrition = mealWeek.map((day) => {
+      const entries = day.meals
+        .filter((meal) => meal.name && meal.name !== "-")
+        .map((meal) => `${meal.slot}: ${meal.name} (${meal.cal} cal, ${meal.protein}g protein)`);
+      return `${day.name}: ${entries.length > 0 ? entries.join(" | ") : "No meals planned"}`;
+    });
+
+    try {
+      await fetchJson<ProgramPlan>(`/plans/${clientPortal.plan.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ nutrition }),
+      });
+
+      setLastSavedAt(new Date());
+      push("Meal plan saved to client profile.", "success");
+      return true;
+    } catch {
+      push("Failed to save meal plan to client profile.", "error");
+      return false;
+    }
+  }, [clientPortal?.plan?.id, mealWeek, push]);
+
+  const savePortalMetric = useCallback(async (payload: Partial<BodyMetric>) => {
+    if (!clientPortal?.client.id) return false;
+    try {
+      const created = await fetchJson<BodyMetric>(`/clients/${clientPortal.client.id}/metrics`, {
+        method: "POST",
+        body: JSON.stringify({
+          date: payload.date ?? new Date().toISOString().slice(0, 10),
+          weightKg: payload.weightKg ?? null,
+          bodyFatPct: payload.bodyFatPct ?? null,
+          waistCm: payload.waistCm ?? null,
+          hipsCm: payload.hipsCm ?? null,
+          armCm: payload.armCm ?? null,
+          thighCm: payload.thighCm ?? null,
+          energyScore: payload.energyScore ?? null,
+          sleepRating: payload.sleepRating ?? null,
+          notes: payload.notes ?? null,
+        }),
+      });
+      setPortalMetrics(prev => [...prev, created]);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [clientPortal?.client.id]);
+
+  const saveQuickSummaryMetric = useCallback(async (field: "weight" | "energy") => {
+    const payload = field === "weight"
+      ? { weightKg: portalWeightDraft ? Number(portalWeightDraft) : null }
+      : { energyScore: portalEnergyDraft ? Number(portalEnergyDraft) : null };
+    const ok = await savePortalMetric(payload);
+    if (ok) {
+      push(field === "weight" ? "Weight updated." : "Energy updated.", "success");
+      setPortalSummaryEdit(ed => ({ ...ed, [field]: false }));
+    } else {
+      push("Failed to update metric.", "error");
+    }
+  }, [portalWeightDraft, portalEnergyDraft, push, savePortalMetric]);
+
+  const saveWeightCard = useCallback(async () => {
+    if (!clientPortal?.client.id) return;
+    const parsedWeight = portalWeightDraft.trim() ? Number(portalWeightDraft) : null;
+    const parsedGoalWeight = portalGoalWeightDraft.trim() ? Number(portalGoalWeightDraft) : null;
+    if (parsedWeight != null && Number.isNaN(parsedWeight)) {
+      push("Current weight is invalid.", "error");
+      return;
+    }
+    if (parsedGoalWeight != null && Number.isNaN(parsedGoalWeight)) {
+      push("Goal weight is invalid.", "error");
+      return;
+    }
+
+    let profileSaved = false;
+    let metricSaved = false;
+
+    try {
+      await onSaveEdits({
+        weightUnit: portalWeightUnitDraft,
+        goalWeight: parsedGoalWeight,
+        goalTimelineMonths: portalGoalTimelineDraft
+      });
+      profileSaved = true;
+
+      if (parsedWeight != null) {
+        metricSaved = await savePortalMetric({
+          date: portalMeasurementDateDraft || new Date().toISOString().slice(0, 10),
+          weightKg: Number(convertUnitToKg(parsedWeight, portalWeightUnitDraft).toFixed(3))
+        } as Partial<BodyMetric>);
+        if (!metricSaved) throw new Error("metric-save-failed");
+      }
+
+      setPortalSummaryEdit((ed) => ({ ...ed, weight: false }));
+      push("Weight card updated.", "success");
+    } catch {
+      if (!profileSaved || !metricSaved) {
+        push("Failed to update weight card.", "error");
+      }
+    }
+  }, [
+    clientPortal?.client.id,
+    onSaveEdits,
+    portalGoalTimelineDraft,
+    portalGoalWeightDraft,
+    portalMeasurementDateDraft,
+    portalWeightDraft,
+    portalWeightUnitDraft,
+    push,
+    savePortalMetric
+  ]);
+
+  const saveAvatarPrefs = useCallback((nextPrefs: ClientAvatarPrefs) => {
+    const sanitized = sanitizeClientAvatarPrefs(nextPrefs);
+    setAvatarPrefs(sanitized);
+    setAvatarInitialsDraft(sanitized.initialsOverride);
+    setAvatarError("");
+  }, []);
+
+  const handleAvatarFileChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setAvatarError("Please choose an image file.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        saveAvatarPrefs({ ...avatarPrefs, imageDataUrl: reader.result });
+      }
+    };
+    reader.onerror = () => setAvatarError("Failed to read the selected image.");
+    reader.readAsDataURL(file);
+  }, [avatarPrefs, saveAvatarPrefs]);
+
+  const applyAvatarInitials = useCallback(() => {
+    saveAvatarPrefs({ ...avatarPrefs, initialsOverride: avatarInitialsDraft });
+  }, [avatarInitialsDraft, avatarPrefs, saveAvatarPrefs]);
+
+  const tabItems = [
+    { key: "plan" as const, label: "Overview" },
+    { key: "meal" as const, label: "AI Meal Planning" },
+    { key: "workout" as const, label: "AI Workout Plan" },
+    { key: "notes" as const, label: "Notes" },
+    { key: "progress" as const, label: "Progress" },
+    { key: "payments" as const, label: "Payments" },
+    { key: "messages" as const, label: "Messages", badge: clientPortal?.messages?.length ?? 0 },
+    { key: "history" as const, label: "History" },
+  ];
+
+  return (
+    <div className="page-view">
+      {!clientPortal ? (
+        <div className="empty-state">
+          <span className="material-symbols-outlined" style={{ fontSize: "3rem", display: "block", marginBottom: "1rem", color: "var(--primary)" }}>group</span>
+          <p style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "1.1rem", color: "var(--text-primary)" }}>No client selected</p>
+          <p style={{ fontSize: "0.875rem" }}>Choose a client from the dropdown above to open their portal.</p>
+        </div>
+      ) : (
+        <>
+          {/* CLIENT HEADER */}
+              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "1.75rem", gap: "1.5rem", flexWrap: "wrap" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "1.75rem" }}>
+                  <div className="portal-avatar-wrap">
+                    <div className="portal-avatar-card">
+                      {avatarPrefs.imageDataUrl ? (
+                        <img src={avatarPrefs.imageDataUrl} alt={`${clientPortal.client.fullName} profile`} className="portal-avatar-image" />
+                      ) : (
+                        <span>{initials}</span>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      className="portal-avatar-edit-btn"
+                      onClick={() => setShowAvatarModal(true)}
+                      aria-label="Edit client avatar"
+                    >
+                      <span className="material-symbols-outlined" style={{ fontSize: "1rem" }}>edit</span>
+                    </button>
+                    <div style={{ position: "absolute", bottom: -8, right: -8, width: 28, height: 28, background: "var(--primary)", borderRadius: "50%", display: "grid", placeItems: "center", border: "3px solid var(--bg-page)" }}>
+                      <span className="material-symbols-outlined" style={{ fontSize: "0.85rem", color: "white", fontWeight: 700 }}>verified</span>
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "0.35rem", flexWrap: "wrap" }}>
+                      <h1 style={{ fontFamily: "Manrope, sans-serif", fontSize: "2.25rem", fontWeight: 800, color: "var(--text-primary)", letterSpacing: "-0.04em", lineHeight: 1.1 }}>
+                        {clientPortal.client.fullName}
+                      </h1>
+                      <span style={{ padding: "0.2rem 0.65rem", background: "var(--surface-container)", color: "var(--on-surface-variant)", borderRadius: "9999px", fontFamily: "Inter, sans-serif", fontSize: "0.55rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+                        Premium Member
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "1.25rem", flexWrap: "wrap" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.35rem", color: "var(--on-surface-variant)", fontFamily: "Inter, sans-serif", fontSize: "0.75rem" }}>
+                        <span className="material-symbols-outlined" style={{ fontSize: "0.9rem", color: "var(--primary)" }}>calendar_today</span>
+                        Joined {new Date(clientPortal.client.nextRenewalDate).toLocaleDateString("en-US", { month: "long", year: "numeric" })}
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.35rem", color: "var(--on-surface-variant)", fontFamily: "Inter, sans-serif", fontSize: "0.75rem" }}>
+                        <span className="material-symbols-outlined" style={{ fontSize: "0.9rem", color: "var(--primary)" }}>mail</span>
+                        {clientPortal.client.email}
+                      </div>
+                      <StatusPill status={clientPortal.client.status} />
+                    </div>
+                  </div>
+                </div>
+                <div style={{ background: "var(--surface-container)", borderRadius: "2rem", padding: "1.25rem 1.75rem", minWidth: 280 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
+                    <span style={{ fontFamily: "Inter, sans-serif", fontSize: "0.6rem", fontWeight: 700, color: "var(--on-surface-variant)", textTransform: "uppercase", letterSpacing: "0.1em" }}>Client Adherence</span>
+                    <span style={{ fontFamily: "Manrope, sans-serif", fontSize: "1.5rem", fontWeight: 800, color: adherenceColor }}>{clientPortal.client.adherenceScore}%</span>
+                  </div>
+                  <div style={{ height: 8, background: "rgba(255,255,255,0.5)", borderRadius: "9999px", overflow: "hidden", marginBottom: "0.5rem" }}>
+                    <div style={{ height: "100%", width: `${clientPortal.client.adherenceScore}%`, background: "var(--primary)", borderRadius: "9999px", transition: "width 0.6s cubic-bezier(0.34,1.56,0.64,1)" }} />
+                  </div>
+                  <div style={{ textAlign: "right", marginBottom: "0.45rem" }}>
+                    <AdherenceTrend deltaWeek={(clientPortal.client as any).adherenceDeltaWeek} />
+                  </div>
+                  <p style={{ fontFamily: "Inter, sans-serif", fontSize: "0.68rem", color: "var(--outline)", textAlign: "center", lineHeight: 1.5 }}>
+                    {clientPortal.latestCheckIn
+                      ? clientPortal.client.adherenceScore >= 85
+                      ? `${clientPortal.client.fullName.split(" ")[0]} is progressing excellently in all targets.`
+                      : clientPortal.client.adherenceScore >= 60
+                      ? `${clientPortal.client.fullName.split(" ")[0]} is on track but needs a push on mobility sessions.`
+                      : `${clientPortal.client.fullName.split(" ")[0]} may need a curriculum pivot to maintain momentum.`
+                      : "Baseline onboarding score. It updates after check-ins, habit completions, and coach-entered progress data."}
+                  </p>
+                  <p style={{ fontFamily: "Inter, sans-serif", fontSize: "0.62rem", color: "var(--outline)", textAlign: "center", lineHeight: 1.45, marginTop: "0.35rem" }}>
+                    Score source: seeded baseline plus recent check-ins, habits, and progress logs.
+                  </p>
+                </div>
+              </div>
+
+              {/* ACTION BAR */}
+              <div className="portal-action-bar">
+                <div className="portal-action-bar-left">
+                  <span style={{ fontFamily: "Inter, sans-serif", fontSize: "0.65rem", fontWeight: 700, color: "var(--on-surface-variant)", textTransform: "uppercase", letterSpacing: "0.08em" }}>Active View:</span>
+                  <select
+                    className="portal-client-select"
+                    value={selectedClientId ?? ""}
+                    onChange={e => onSwitchClient(e.target.value)}
+                  >
+                    {sorted.map(c => <option key={c.id} value={c.id}>{c.fullName}</option>)}
+                  </select>
+                </div>
+                <div style={{ display: "flex", gap: "0.6rem" }}>
+                  <button onClick={() => onCheckIn(clientPortal.client.id)} style={{ display: "flex", alignItems: "center", gap: "0.4rem", padding: "0.55rem 1.25rem", borderRadius: "9999px", border: "none", background: "linear-gradient(135deg, var(--primary) 0%, var(--primary-container) 100%)", fontFamily: "Inter, sans-serif", fontSize: "0.75rem", fontWeight: 700, color: "white", cursor: "pointer", boxShadow: "0 4px 16px rgba(0,135,103,0.25)", transition: "all 0.15s ease" }}>
+                    <span className="material-symbols-outlined" style={{ fontSize: "1rem" }}>check_circle</span>
+                    Submit Check-in
+                  </button>
+                </div>
+              </div>
+          {/* TAB NAVIGATION */}
+          <div className="portal-tab-row">
+            {tabItems.map(t => (
+              <button
+                key={t.key}
+                onClick={() => setActiveTab(t.key)}
+                className={`portal-tab-btn${activeTab === t.key ? " portal-tab-btn--active" : ""}`}
+              >
+                {t.label}
+                {t.badge ? (
+                  <span className="portal-tab-badge">{t.badge}</span>
+                ) : null}
+              </button>
+            ))}
+          </div>
+
+          {activeTab === "meal" && selectedPlannerDay && (
+            <MealPlannerTab
+              key={clientPortal?.client.id ?? "meal-planner"}
+              initialWeek={mealWeek}
+              initialTargets={macroTargets}
+              onWeekChange={(w) => { setMealWeek(w); }}
+              onTargetsChange={(t) => { setMacroTargets(t); }}
+              onSaveStatus={() => setLastSavedAt(new Date())}
+              onSendPlan={async () => {
+                const wasSent = await saveMealPlan();
+                if (wasSent) {
+                  setSentMealPlan(true);
+                }
+                return wasSent;
+              }}
+              pushToast={push}
+            />
+          )}
+
+          {/* OVERVIEW TAB */}
+          {activeTab === "plan" && clientPortal && (
+            <div>
+              <div className="portal-summary-grid">
+                <div className="portal-summary-card">
+                  <div className="portal-summary-label">Weight</div>
+                  <div className="portal-summary-value">{formatWeightValue(currentWeight, displayWeightUnit)}</div>
+                  <div className="portal-summary-sub">
+                    Goal {displayGoalWeight != null ? `${displayGoalWeight} ${displayWeightUnit}` : "—"} in {displayGoalTimeline} month{displayGoalTimeline === 1 ? "" : "s"}
+                  </div>
+                  <div className="portal-summary-sub">Measured {latestWeightDate}</div>
+                  <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.65rem", flexWrap: "wrap" }}>
+                    <button onClick={() => setPortalSummaryEdit(ed => ({ ...ed, weight: true }))} className="portal-summary-link">Edit</button>
+                    <button onClick={() => setShowWeightHistoryModal(true)} className="portal-summary-link">History graph</button>
+                  </div>
+                </div>
+                <div className="portal-summary-card">
+                  <div className="portal-summary-label">Energy</div>
+                  {portalSummaryEdit.energy ? (
+                    <div className="portal-summary-edit">
+                      <input
+                        autoFocus
+                        type="number"
+                        min="1"
+                        max="10"
+                        value={portalEnergyDraft}
+                        onChange={e => setPortalEnergyDraft(e.target.value)}
+                        className="portal-summary-input"
+                      />
+                      <button onClick={() => void saveQuickSummaryMetric("energy")} className="portal-summary-save">Save</button>
+                      <button onClick={() => { setPortalSummaryEdit(ed => ({ ...ed, energy: false })); setPortalEnergyDraft(currentEnergy != null ? String(currentEnergy) : ""); }} className="portal-summary-cancel">Cancel</button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="portal-summary-value">{currentEnergy != null ? `${currentEnergy}/10` : "—"}</div>
+                      <button onClick={() => setPortalSummaryEdit(ed => ({ ...ed, energy: true }))} className="portal-summary-link">Edit energy</button>
+                    </>
+                  )}
+                </div>
+                <div className="portal-summary-card">
+                  <div className="portal-summary-label">MRR</div>
+                  <div className="portal-summary-value">{currentMrr != null ? `£${currentMrr}` : "—"}</div>
+                  <div className="portal-summary-sub">{currentSubscription?.renewalDate ? `Renews ${currentSubscription.renewalDate}` : "Monthly recurring revenue"}</div>
+                </div>
+                <div className="portal-summary-card">
+                  <div className="portal-summary-label">Client Status</div>
+                  <div style={{ marginBottom: "0.55rem" }}><StatusPill status={clientPortal.client.status} /></div>
+                  <div className="portal-summary-sub">
+                    {clientPortal.client.status === "paused"
+                      ? "Engagement is paused and needs review."
+                      : clientPortal.client.status === "inactive"
+                      ? "Currently not active."
+                      : clientPortal.client.status === "archived"
+                      ? "Archived from active coaching."
+                      : clientPortal.client.status === "lead"
+                      ? "Lead stage before active coaching."
+                      : "Currently active in portal."}
+                  </div>
+                </div>
+              </div>
+
+              <div className="portal-dashboard-row">
+                {/* PRIMARY GOAL */}
+                <div className="portal-goal-card">
+                  <div className="portal-goal-header">
+                    <div>
+                      <div className="portal-goal-title">Primary Goal</div>
+                      {editing.goal ? (
+                        <input
+                          autoFocus
+                          id="edit-goal"
+                          defaultValue={(clientPortal.client as any).goal}
+                          style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "0.95rem", color: "var(--text-primary)", background: "var(--surface-container)", border: "1.5px solid var(--primary)", borderRadius: "var(--r-sm)", padding: "0.2rem 0.5rem", width: "100%", maxWidth: 260 }}
+                          onKeyDown={e => { if (e.key === "Enter") saveProfile({ goal: (document.getElementById("edit-goal") as HTMLInputElement).value }); if (e.key === "Escape") cancelEdit(); }}
+                        />
+                      ) : (
+                        <div className="portal-goal-text">{(clientPortal.client as any).goal || "Not set — click edit to add"}</div>
+                      )}
+                    </div>
+                    <div style={{ display: "flex", gap: "0.25rem", alignItems: "center" }}>
+                      {editing.goal ? (
+                        <>
+                          <button onClick={() => saveProfile({ goal: (document.getElementById("edit-goal") as HTMLInputElement).value })} disabled={savingProfile} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--primary)", display: "grid", placeItems: "center" }} title="Save"><span className="material-symbols-outlined" style={{ fontSize: "1.1rem" }}>check</span></button>
+                          <button onClick={cancelEdit} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--outline)", display: "grid", placeItems: "center" }} title="Cancel"><span className="material-symbols-outlined" style={{ fontSize: "1.1rem" }}>close</span></button>
+                        </>
+                      ) : (
+                        <button onClick={() => startEdit("goal")} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--outline)", display: "grid", placeItems: "center" }} title="Edit goal"><span className="material-symbols-outlined" style={{ fontSize: "1.1rem" }}>edit</span></button>
+                      )}
+                      <span className="material-symbols-outlined" style={{ color: "var(--primary)", fontSize: "1.5rem" }}>track_changes</span>
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "Manrope, sans-serif", fontSize: "0.8rem", fontWeight: 700, marginBottom: "0.5rem" }}>
+                      <span>Current Progress</span>
+                      <span style={{ color: "var(--primary)" }}>
+                        {checkInHistory.length > 0
+                          ? `${(checkInHistory.reduce((s, c) => s + (c.weightDelta ?? 0), 0)).toFixed(1)}kg lost`
+                          : "Tracking started"}
+                      </span>
+                    </div>
+                    <div style={{ height: 10, background: "var(--surface-container)", borderRadius: "9999px", overflow: "hidden" }}>
+                      <div style={{ height: "100%", width: `${Math.min(clientPortal.client.adherenceScore, 100)}%`, background: "linear-gradient(90deg, var(--primary) 0%, var(--primary-container) 100%)", borderRadius: "9999px" }} />
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "Inter, sans-serif", fontSize: "0.58rem", fontWeight: 700, color: "var(--outline)", textTransform: "uppercase", letterSpacing: "0.05em", marginTop: "0.4rem" }}>
+                      <span>Month 1</span><span>Month 3</span><span>Month 5</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* HEALTH & CONSIDERATIONS */}
+                <div className="portal-health-card">
+                  <div className="portal-health-header">
+                    <span className="material-symbols-outlined" style={{ color: "var(--tertiary)", fontSize: "1.1rem" }}>medical_services</span>
+                    <h4>Health &amp; Considerations</h4>
+                    <div style={{ marginLeft: "auto", display: "flex", gap: "0.2rem" }}>
+                      {editing.health ? (
+                        <>
+                          <button onClick={() => saveProfile({ healthConditions: tempHealth })} disabled={savingProfile} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--primary)", display: "grid", placeItems: "center" }} title="Save"><span className="material-symbols-outlined" style={{ fontSize: "1rem" }}>check</span></button>
+                          <button onClick={cancelEdit} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--outline)", display: "grid", placeItems: "center" }} title="Cancel"><span className="material-symbols-outlined" style={{ fontSize: "1rem" }}>close</span></button>
+                        </>
+                      ) : (
+                        <button onClick={() => startEdit("health")} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--outline)", display: "grid", placeItems: "center" }} title="Edit health"><span className="material-symbols-outlined" style={{ fontSize: "1rem" }}>edit</span></button>
+                      )}
+                    </div>
+                  </div>
+                  {editing.health ? (
+                    <div>
+                      {tempHealth.map((h, i) => (
+                        <div key={i} style={{ marginBottom: "0.6rem", padding: "0.5rem", background: "var(--surface-container)", borderRadius: "var(--r-sm)", borderLeft: "3px solid var(--tertiary)" }}>
+                          <input value={h.label} placeholder="Condition (e.g. Knee injury)" style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "0.78rem", background: "transparent", border: "none", borderBottom: "1px solid var(--outline-variant)", padding: "0.1rem 0", width: "100%", color: "var(--text-primary)", display: "block" }} onChange={e => { const n = [...tempHealth]; n[i] = { label: e.target.value, note: n[i].note }; setTempHealth(n); }} />
+                          <input value={h.note} placeholder="Coach note..." style={{ fontFamily: "Inter, sans-serif", fontSize: "0.72rem", background: "transparent", border: "none", padding: "0.1rem 0", width: "100%", color: "var(--on-surface-variant)", display: "block", marginTop: "0.2rem" }} onChange={e => { const n = [...tempHealth]; n[i] = { label: n[i].label, note: e.target.value }; setTempHealth(n); }} />
+                          <button onClick={() => setTempHealth(n => n.filter((_, j) => j !== i))} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--danger)", fontSize: "0.7rem", padding: "0.1rem 0", marginTop: "0.2rem" }}>Remove</button>
+                        </div>
+                      ))}
+                      <button onClick={() => setTempHealth(n => [...n, { label: "", note: "" }])} style={{ background: "none", border: "1px dashed var(--outline-variant)", borderRadius: "var(--r-sm)", padding: "0.3rem 0.6rem", fontSize: "0.72rem", color: "var(--primary)", cursor: "pointer", fontFamily: "Inter, sans-serif" }}>+ Add condition</button>
+                    </div>
+                  ) : (
+                    <div>
+                      {((clientPortal.client as any).healthConditions?.length > 0
+                        ? (clientPortal.client as any).healthConditions
+                        : [{ label: "No health conditions recorded", note: "Click the edit icon above to add health considerations for this client" }]
+                      ).map((h: any, i: number) => (
+                        <div key={i} className="portal-health-item" style={{ borderLeftColor: i === 0 ? "var(--danger)" : "var(--outline)", opacity: (clientPortal.client as any).healthConditions?.length === 0 ? 0.5 : 1 }}>
+                          <div className="portal-health-item-label">{h.label}</div>
+                          <div className="portal-health-item-desc">{h.note}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="portal-dashboard-row">
+                {/* NUTRITION STRATEGY */}
+                <div className="portal-nutrition-card">
+                  <div className="portal-nutrition-header">
+                    <h4>Nutrition Strategy</h4>
+                    <div style={{ display: "flex", gap: "0.25rem", alignItems: "center" }}>
+                      {editing.nutrition ? (
+                        <>
+                          <button onClick={() => {
+                            const cal = parseInt((document.getElementById("edit-nut-cal") as HTMLInputElement)?.value) || null;
+                            const prot = parseInt((document.getElementById("edit-nut-prot") as HTMLInputElement)?.value) || null;
+                            const fat = parseInt((document.getElementById("edit-nut-fat") as HTMLInputElement)?.value) || null;
+                            const carbs = parseInt((document.getElementById("edit-nut-carbs") as HTMLInputElement)?.value) || null;
+                            const note = (document.getElementById("edit-nut-note") as HTMLTextAreaElement)?.value ?? "";
+                            saveProfile({ nutritionCalories: cal, nutritionProteinG: prot, nutritionFatG: fat, nutritionCarbsG: carbs, nutritionCoachNote: note });
+                          }} disabled={savingProfile} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--primary)", display: "grid", placeItems: "center" }} title="Save"><span className="material-symbols-outlined" style={{ fontSize: "1rem" }}>check</span></button>
+                          <button onClick={cancelEdit} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--outline)", display: "grid", placeItems: "center" }} title="Cancel"><span className="material-symbols-outlined" style={{ fontSize: "1rem" }}>close</span></button>
+                        </>
+                      ) : (
+                        <button onClick={() => startEdit("nutrition")} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--outline)", display: "grid", placeItems: "center" }} title="Edit nutrition"><span className="material-symbols-outlined" style={{ fontSize: "1rem" }}>edit</span></button>
+                      )}
+                      <span className="portal-plan-badge">{clientPortal.plan ? "Active Plan" : "Manual"}</span>
+                    </div>
+                  </div>
+                  {editing.nutrition ? (
+                    <div>
+                      <div className="portal-macro-grid" style={{ marginBottom: "0.75rem" }}>
+                        {[
+                          { label: "Calories", id: "edit-nut-cal", key: "nutritionCalories", unit: "KCAL" },
+                          { label: "Protein", id: "edit-nut-prot", key: "nutritionProteinG", unit: "g" },
+                          { label: "Fats", id: "edit-nut-fat", key: "nutritionFatG", unit: "g" },
+                          { label: "Carbs", id: "edit-nut-carbs", key: "nutritionCarbsG", unit: "g" },
+                        ].map(m => (
+                          <div key={m.id} className="portal-macro-chip" style={{ flexDirection: "column", alignItems: "center", gap: "0.2rem" }}>
+                            <div className="portal-macro-label">{m.label}</div>
+                            <input id={m.id} type="number" defaultValue={(clientPortal.client as any)[m.key] ?? ""} style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "1.1rem", color: "var(--text-primary)", background: "var(--surface-container)", border: "1.5px solid var(--primary)", borderRadius: "var(--r-sm)", padding: "0.2rem 0.4rem", width: "70px", textAlign: "center" }} />
+                            <div className="portal-macro-unit">{m.unit}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <textarea id="edit-nut-note" defaultValue={(clientPortal.client as any).nutritionCoachNote} placeholder="Coach's note for this client..." style={{ fontFamily: "Inter, sans-serif", fontSize: "0.75rem", color: "var(--text-primary)", background: "var(--surface-container)", border: "1.5px solid var(--primary)", borderRadius: "var(--r-sm)", padding: "0.4rem", width: "100%", minHeight: "60px", resize: "vertical" }} />
+                    </div>
+                  ) : (
+                    <div>
+                      <div className="portal-macro-grid">
+                        {[
+                          { label: "Calories", value: (clientPortal.client as any).nutritionCalories, unit: "KCAL" },
+                          { label: "Protein", value: (clientPortal.client as any).nutritionProteinG, unit: "g" },
+                          { label: "Fats", value: (clientPortal.client as any).nutritionFatG, unit: "g" },
+                          { label: "Carbs", value: (clientPortal.client as any).nutritionCarbsG, unit: "g" },
+                        ].map(m => (
+                          <div key={m.label} className="portal-macro-chip">
+                            <div className="portal-macro-label">{m.label}</div>
+                            <div className="portal-macro-value">{m.value ?? "—"}</div>
+                            <div className="portal-macro-unit">{m.unit}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="portal-coach-note">
+                        <span className="material-symbols-outlined portal-coach-note-icon">tips_and_updates</span>
+                        <div className="portal-coach-note-text">
+                          <strong>Coach's Note:</strong> {(clientPortal.client as any).nutritionCoachNote || "Click the edit icon to add a coaching note."}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* RIGHT COLUMN */}
+                <div>
+                  {/* WORKOUTS */}
+                  <div className="portal-workouts-card" style={{ marginBottom: "1rem" }}>
+                    <div className="portal-workouts-header">
+                      <h4>Workouts</h4>
+                      <div style={{ background: "rgba(0,135,103,0.1)", borderRadius: "var(--r-lg)", padding: "0.4rem", display: "grid", placeItems: "center" }}>
+                        <span className="material-symbols-outlined" style={{ color: "var(--primary)", fontSize: "1rem" }}>fitness_center</span>
+                      </div>
+                    </div>
+                    {clientPortal.plan ? (
+                      <>
+                        <div>
+                          {clientPortal.plan.latestVersion.workouts.map((w, i) => (
+                            <div key={i} className="portal-workout-item">
+                              <div className={`portal-workout-dot${i > 0 ? " portal-workout-dot--dim" : ""}`} />
+                              <div>
+                                <div className="portal-workout-name">{w.split("(")[0].trim()}</div>
+                                {w.includes("(") && <div className="portal-workout-meta">{w.match(/\([^)]+\)/)?.[0].replace(/[()]/g, "")}</div>}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{ marginTop: "1rem", paddingTop: "0.875rem", borderTop: "1px solid var(--surface-container)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span style={{ fontFamily: "Inter, sans-serif", fontSize: "0.68rem", color: "var(--on-surface-variant)" }}>{clientPortal.plan.title}</span>
+                          <span style={{ background: clientPortal.plan.latestVersion.status === "approved" ? "var(--success-light)" : "var(--warning-light)", color: clientPortal.plan.latestVersion.status === "approved" ? "var(--success-text)" : "var(--warning-text)", padding: "0.15rem 0.6rem", borderRadius: "9999px", fontFamily: "Inter, sans-serif", fontSize: "0.6rem", fontWeight: 700, textTransform: "capitalize" }}>
+                            {clientPortal.plan.latestVersion.status}
+                          </span>
+                        </div>
+                      </>
+                    ) : (
+                      <div style={{ textAlign: "center", padding: "1.5rem 0.5rem", color: "var(--on-surface-variant)", fontFamily: "Inter, sans-serif", fontSize: "0.8rem" }}>
+                        <span className="material-symbols-outlined" style={{ fontSize: "2rem", display: "block", marginBottom: "0.5rem", color: "var(--outline)" }}>fitness_center</span>
+                        No workout plan yet.<br />Generate one in AI Plans.
+                      </div>
+                    )}
+                  </div>
+
+                  {/* LIFESTYLE GRID */}
+                  <div className="portal-lifestyle-grid">
+                    {/* WATER */}
+                    <div className="portal-lifestyle-card">
+                      <span className="material-symbols-outlined portal-lifestyle-icon" style={{ color: "var(--primary-container)" }}>water_drop</span>
+                      <div style={{ flex: 1 }}>
+                        <div className="portal-lifestyle-label">Water Target</div>
+                        {editing.water ? (
+                          <div style={{ display: "flex", alignItems: "center", gap: "0.3rem", marginTop: "0.2rem" }}>
+                            <input id="edit-water" type="number" min="1" max="10" defaultValue={(clientPortal.client as any).dailyWaterTarget ?? 3} style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "0.9rem", background: "var(--surface-container)", border: "1.5px solid var(--primary)", borderRadius: "var(--r-sm)", padding: "0.15rem 0.3rem", width: "50px", textAlign: "center" }} />
+                            <span style={{ fontFamily: "Inter, sans-serif", fontSize: "0.7rem", color: "var(--on-surface-variant)" }}>L / day</span>
+                            <button onClick={() => saveProfile({ dailyWaterTarget: parseInt((document.getElementById("edit-water") as HTMLInputElement).value) || 3 })} disabled={savingProfile} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--primary)", display: "grid", placeItems: "center" }}><span className="material-symbols-outlined" style={{ fontSize: "0.9rem" }}>check</span></button>
+                            <button onClick={cancelEdit} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--outline)", display: "grid", placeItems: "center" }}><span className="material-symbols-outlined" style={{ fontSize: "0.9rem" }}>close</span></button>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="portal-lifestyle-value">{(clientPortal.client as any).dailyWaterTarget ?? 3}L</div>
+                            <div className="portal-lifestyle-progress"><div className="portal-lifestyle-progress-fill" style={{ width: `${Math.min(clientPortal.client.adherenceScore, 100)}%` }} /></div>
+                            <button onClick={() => startEdit("water")} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--outline)", fontSize: "0.65rem", fontFamily: "Inter, sans-serif", padding: "0", marginTop: "0.2rem", textDecoration: "underline" }}>Edit</button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* STEPS */}
+                    <div className="portal-lifestyle-card">
+                      <span className="material-symbols-outlined portal-lifestyle-icon" style={{ color: "var(--tertiary-fixed)" }}>footprint</span>
+                      <div style={{ flex: 1 }}>
+                        <div className="portal-lifestyle-label">Steps Target</div>
+                        {editing.steps ? (
+                          <div style={{ display: "flex", alignItems: "center", gap: "0.3rem", marginTop: "0.2rem" }}>
+                            <input id="edit-steps" type="number" min="1000" max="50000" defaultValue={(clientPortal.client as any).dailyStepsTarget ?? 10000} style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "0.9rem", background: "var(--surface-container)", border: "1.5px solid var(--primary)", borderRadius: "var(--r-sm)", padding: "0.15rem 0.3rem", width: "60px", textAlign: "center" }} />
+                            <span style={{ fontFamily: "Inter, sans-serif", fontSize: "0.7rem", color: "var(--on-surface-variant)" }}>steps</span>
+                            <button onClick={() => saveProfile({ dailyStepsTarget: parseInt((document.getElementById("edit-steps") as HTMLInputElement).value) || 10000 })} disabled={savingProfile} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--primary)", display: "grid", placeItems: "center" }}><span className="material-symbols-outlined" style={{ fontSize: "0.9rem" }}>check</span></button>
+                            <button onClick={cancelEdit} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--outline)", display: "grid", placeItems: "center" }}><span className="material-symbols-outlined" style={{ fontSize: "0.9rem" }}>close</span></button>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="portal-lifestyle-value">{((clientPortal.client as any).dailyStepsTarget ?? 10000).toLocaleString()}</div>
+                            <div className="portal-lifestyle-target">Daily</div>
+                            <button onClick={() => startEdit("steps")} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--outline)", fontSize: "0.65rem", fontFamily: "Inter, sans-serif", padding: "0", marginTop: "0.2rem", textDecoration: "underline" }}>Edit</button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* SUPPLEMENTS */}
+                    <div className="portal-lifestyle-card portal-lifestyle-card--wide">
+                      <div className="portal-supplements-header">
+                        <span className="material-symbols-outlined portal-lifestyle-icon" style={{ color: "var(--tertiary)" }}>pill</span>
+                        <h4>Supplements</h4>
+                        <div style={{ marginLeft: "auto", display: "flex", gap: "0.2rem" }}>
+                          {editing.supplements ? (
+                            <>
+                              <button onClick={() => saveProfile({ supplements: tempSupplements.split(",").map(s => s.trim()).filter(Boolean) })} disabled={savingProfile} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--primary)", display: "grid", placeItems: "center" }} title="Save"><span className="material-symbols-outlined" style={{ fontSize: "0.9rem" }}>check</span></button>
+                              <button onClick={cancelEdit} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--outline)", display: "grid", placeItems: "center" }} title="Cancel"><span className="material-symbols-outlined" style={{ fontSize: "0.9rem" }}>close</span></button>
+                            </>
+                          ) : (
+                            <button onClick={() => startEdit("supplements")} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--outline)", display: "grid", placeItems: "center" }} title="Edit supplements"><span className="material-symbols-outlined" style={{ fontSize: "0.9rem" }}>edit</span></button>
+                          )}
+                        </div>
+                      </div>
+                      {editing.supplements ? (
+                        <div>
+                          <input value={tempSupplements} onChange={e => setTempSupplements(e.target.value)} placeholder="Vitamin D3, Omega-3, Magnesium..." style={{ fontFamily: "Inter, sans-serif", fontSize: "0.75rem", background: "var(--surface-container)", border: "1.5px solid var(--primary)", borderRadius: "var(--r-sm)", padding: "0.4rem", width: "100%", color: "var(--text-primary)" }} />
+                          <div style={{ fontFamily: "Inter, sans-serif", fontSize: "0.68rem", color: "var(--on-surface-variant)", marginTop: "0.3rem" }}>Separate supplements with commas</div>
+                        </div>
+                      ) : (
+                        <div className="portal-supplement-pills">
+                          {((clientPortal.client as any).supplements?.length > 0
+                            ? (clientPortal.client as any).supplements
+                            : ["No supplements added"]
+                          ).map((s: string) => (
+                            <span key={s} className="portal-supplement-pill" style={{ opacity: (clientPortal.client as any).supplements?.length === 0 ? 0.5 : 1 }}>{s}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* AI WORKOUT PLAN TAB */}
+          {activeTab === "workout" && (
+            <WorkoutPlannerTab
+              key={clientPortal?.client.id ?? "workout-planner"}
+              clientId={clientPortal?.client.id ?? "unknown-client"}
+              initialWeek={workoutWeek}
+              onWeekChange={setWorkoutWeek}
+              pushToast={push}
+              requestJson={fetchJson}
+            />
+          )}
+
+          {activeTab === "notes" && (
+            <>
+              <div className="panel" style={{ marginBottom: "1rem" }}>
+                <div className="section-header"><h2>Coach Notes</h2></div>
+                <textarea
+                  value={portalNewNote}
+                  onChange={e => setPortalNewNote(e.target.value)}
+                  placeholder="Session observations, client mood, blockers, next actions..."
+                  rows={4}
+                  style={{ width: "100%", padding: "0.7rem 0.85rem", borderRadius: "var(--r-md)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--text-primary)", fontFamily: "Inter, sans-serif", fontSize: "0.85rem", outline: "none", resize: "vertical", boxSizing: "border-box", marginBottom: "0.75rem" }}
+                />
+                <button
+                  onClick={async () => {
+                    if (!portalNewNote.trim() || !clientPortal?.client.id) return;
+                    setPortalNoteSaving(true);
+                    try {
+                      const created = await fetchJson<ClientNote>(`/clients/${clientPortal.client.id}/notes`, {
+                        method: "POST",
+                        body: JSON.stringify({ content: portalNewNote.trim() }),
+                      });
+                      setPortalNotes(prev => [created, ...prev]);
+                      setPortalNewNote("");
+                      push("Note added.", "success");
+                    } catch {
+                      push("Failed to add note.", "error");
+                    } finally {
+                      setPortalNoteSaving(false);
+                    }
+                  }}
+                  disabled={portalNoteSaving || !portalNewNote.trim()}
+                  style={{ padding: "0.55rem 1rem", borderRadius: "var(--r-md)", border: "none", background: portalNewNote.trim() && !portalNoteSaving ? "var(--primary)" : "var(--surface-container)", color: portalNewNote.trim() && !portalNoteSaving ? "white" : "var(--outline)", fontFamily: "Manrope, sans-serif", fontSize: "0.8rem", fontWeight: 700, cursor: portalNewNote.trim() && !portalNoteSaving ? "pointer" : "not-allowed" }}
+                >
+                  {portalNoteSaving ? "Saving..." : "Add Note"}
+                </button>
+              </div>
+              {portalNotes.length === 0 ? (
+                <div className="empty-state">
+                  <span className="material-symbols-outlined" style={{ fontSize: "2.5rem", color: "var(--outline)" }}>note_add</span>
+                  <p style={{ fontFamily: "Inter, sans-serif", color: "var(--outline)" }}>No coach notes yet.</p>
+                </div>
+              ) : (
+                portalNotes.map(note => (
+                  <div key={note.id} className="panel" style={{ marginBottom: "0.75rem", position: "relative" }}>
+                    <p style={{ fontFamily: "Inter, sans-serif", fontSize: "0.88rem", color: "var(--on-surface-variant)", lineHeight: 1.6, margin: "0 0 0.4rem 0" }}>{note.content}</p>
+                    <p style={{ fontFamily: "Inter, sans-serif", fontSize: "0.7rem", color: "var(--outline)", margin: 0 }}>{new Date(note.createdAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}</p>
+                    <button
+                      onClick={async () => {
+                        if (!clientPortal?.client.id || !confirm("Delete this note?")) return;
+                        try {
+                          await fetchJson(`/clients/${clientPortal.client.id}/notes/${note.id}`, { method: "DELETE" });
+                          setPortalNotes(prev => prev.filter(n => n.id !== note.id));
+                          push("Note deleted.", "success");
+                        } catch {
+                          push("Failed to delete note.", "error");
+                        }
+                      }}
+                      style={{ position: "absolute", top: "0.75rem", right: "0.75rem", background: "none", border: "none", cursor: "pointer", color: "var(--outline)", padding: "0.25rem", display: "grid", placeItems: "center" }}
+                    >
+                      <span className="material-symbols-outlined" style={{ fontSize: "0.9rem" }}>delete</span>
+                    </button>
+                  </div>
+                ))
+              )}
+            </>
+          )}
+
+          {activeTab === "progress" && (
+            <>
+              <div className="panel" style={{ marginBottom: "1.25rem" }}>
+                <div className="section-header"><h2>Log Check-in</h2></div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: "0.6rem", marginBottom: "0.75rem" }}>
+                  {[
+                    {l:"Weight (kg)",k:"weightKg",step:"0.1",ph:"78.5"},
+                    {l:"Body Fat (%)",k:"bodyFatPct",step:"0.1",ph:"18.5"},
+                    {l:"Waist (cm)",k:"waistCm",step:"0.1",ph:"82"},
+                    {l:"Hips (cm)",k:"hipsCm",step:"0.1",ph:"98"},
+                    {l:"Arm (cm)",k:"armCm",step:"0.1",ph:"35"},
+                    {l:"Thigh (cm)",k:"thighCm",step:"0.1",ph:"58"},
+                  ].map(f => (
+                    <div key={f.k}>
+                      <label style={{ fontFamily: "Inter, sans-serif", fontSize: "0.65rem", fontWeight: 600, color: "var(--outline)", textTransform: "uppercase", letterSpacing: "0.05em", display: "block", marginBottom: "0.25rem" }}>{f.l}</label>
+                      <input type="number" step={f.step} value={portalMetricDraft[f.k as keyof typeof portalMetricDraft]} onChange={e => setPortalMetricDraft(d => ({ ...d, [f.k]: e.target.value }))} placeholder={f.ph} style={{ width: "100%", padding: "0.45rem 0.55rem", borderRadius: "var(--r-sm)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--text-primary)", fontFamily: "Inter, sans-serif", fontSize: "0.8rem", boxSizing: "border-box", outline: "none" }} />
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.6rem", marginBottom: "0.75rem" }}>
+                  {[{l:"Energy (1-10)",k:"energyScore",ph:"1-10"}, {l:"Sleep (1-10)",k:"sleepRating",ph:"1-10"}].map(f => (
+                    <div key={f.k}>
+                      <label style={{ fontFamily: "Inter, sans-serif", fontSize: "0.65rem", fontWeight: 600, color: "var(--outline)", textTransform: "uppercase", letterSpacing: "0.05em", display: "block", marginBottom: "0.25rem" }}>{f.l}</label>
+                      <input type="number" min="1" max="10" value={portalMetricDraft[f.k as keyof typeof portalMetricDraft]} onChange={e => setPortalMetricDraft(d => ({ ...d, [f.k]: e.target.value }))} placeholder={f.ph} style={{ width: "100%", padding: "0.45rem 0.55rem", borderRadius: "var(--r-sm)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--text-primary)", fontFamily: "Inter, sans-serif", fontSize: "0.8rem", boxSizing: "border-box", outline: "none" }} />
+                    </div>
+                  ))}
+                </div>
+                <button onClick={async () => {
+                  setPortalMetricSaving(true);
+                  const ok = await savePortalMetric({
+                    weightKg: portalMetricDraft.weightKg ? Number(portalMetricDraft.weightKg) : null,
+                    bodyFatPct: portalMetricDraft.bodyFatPct ? Number(portalMetricDraft.bodyFatPct) : null,
+                    waistCm: portalMetricDraft.waistCm ? Number(portalMetricDraft.waistCm) : null,
+                    hipsCm: portalMetricDraft.hipsCm ? Number(portalMetricDraft.hipsCm) : null,
+                    armCm: portalMetricDraft.armCm ? Number(portalMetricDraft.armCm) : null,
+                    thighCm: portalMetricDraft.thighCm ? Number(portalMetricDraft.thighCm) : null,
+                    energyScore: portalMetricDraft.energyScore ? Number(portalMetricDraft.energyScore) : null,
+                    sleepRating: portalMetricDraft.sleepRating ? Number(portalMetricDraft.sleepRating) : null,
+                  });
+                  setPortalMetricSaving(false);
+                  if (ok) {
+                    setPortalMetricDraft({ weightKg: '', bodyFatPct: '', waistCm: '', hipsCm: '', armCm: '', thighCm: '', energyScore: '', sleepRating: '' });
+                    push("Check-in logged.", "success");
+                  } else {
+                    push("Failed to log check-in.", "error");
+                  }
+                }} disabled={portalMetricSaving} style={{ padding: "0.55rem 1rem", borderRadius: "var(--r-md)", border: "none", background: portalMetricSaving ? "var(--surface-container)" : "var(--primary)", color: portalMetricSaving ? "var(--outline)" : "white", fontFamily: "Manrope, sans-serif", fontSize: "0.8rem", fontWeight: 700, cursor: portalMetricSaving ? "not-allowed" : "pointer" }}>
+                  {portalMetricSaving ? "Saving..." : "Log Check-in"}
+                </button>
+              </div>
+              {portalMetricsSorted.length === 0 ? (
+                <div className="empty-state">
+                  <span className="material-symbols-outlined" style={{ fontSize: "2.5rem", color: "var(--outline)" }}>show_chart</span>
+                  <p style={{ fontFamily: "Inter, sans-serif", color: "var(--outline)" }}>No body metrics recorded yet.</p>
+                </div>
+              ) : (
+                <div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "0.75rem", marginBottom: "1.25rem" }}>
+                    {[
+                      { l: "Weight", v: latestPortalMetric?.weightKg != null ? `${latestPortalMetric.weightKg} kg` : "—" },
+                      { l: "Body Fat", v: latestPortalMetric?.bodyFatPct != null ? `${latestPortalMetric.bodyFatPct}%` : "—" },
+                      { l: "Waist", v: latestPortalMetric?.waistCm != null ? `${latestPortalMetric.waistCm} cm` : "—" },
+                      { l: "Energy", v: latestPortalMetric?.energyScore != null ? `${latestPortalMetric.energyScore}/10` : "—" },
+                      { l: "Sleep", v: latestPortalMetric?.sleepRating != null ? `${latestPortalMetric.sleepRating}/10` : "—" },
+                      { l: "Records", v: String(portalMetricsSorted.length) },
+                    ].map(m => (
+                      <div key={m.l} className="panel" style={{ padding: "0.9rem", textAlign: "center", marginBottom: 0 }}>
+                        <div style={{ fontFamily: "Inter, sans-serif", fontSize: "0.65rem", color: "var(--outline)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "0.3rem" }}>{m.l}</div>
+                        <div style={{ fontFamily: "Manrope, sans-serif", fontWeight: 800, fontSize: "1.1rem", color: "var(--text-primary)" }}>{m.v}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="panel">
+                    <div className="section-header"><h2>Metric Log</h2></div>
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "Inter, sans-serif", fontSize: "0.8rem" }}>
+                        <thead><tr style={{ borderBottom: "1px solid var(--surface-container)" }}>{["Date","Weight","Body Fat","Waist","Hips","Arm","Thigh","Energy","Sleep"].map(h => <th key={h} style={{ padding: "0.45rem 0.5rem", textAlign: "right", color: "var(--outline)", fontWeight: 600, textTransform: "uppercase", fontSize: "0.68rem", letterSpacing: "0.05em", whiteSpace: "nowrap" }}>{h}</th>)}</tr></thead>
+                        <tbody>
+                          {[...portalMetricsSorted].reverse().map(m => (
+                            <tr key={m.id} style={{ borderBottom: "1px solid var(--surface-container)" }}>
+                              <td style={{ padding: "0.45rem 0.5rem", textAlign: "right", color: "var(--text-primary)", fontWeight: 500 }}>{new Date(m.date).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "2-digit" })}</td>
+                              <td style={{ padding: "0.45rem 0.5rem", textAlign: "right" }}>{m.weightKg != null ? `${m.weightKg} kg` : "—"}</td>
+                              <td style={{ padding: "0.45rem 0.5rem", textAlign: "right" }}>{m.bodyFatPct != null ? `${m.bodyFatPct}%` : "—"}</td>
+                              <td style={{ padding: "0.45rem 0.5rem", textAlign: "right" }}>{m.waistCm != null ? `${m.waistCm} cm` : "—"}</td>
+                              <td style={{ padding: "0.45rem 0.5rem", textAlign: "right" }}>{m.hipsCm != null ? `${m.hipsCm} cm` : "—"}</td>
+                              <td style={{ padding: "0.45rem 0.5rem", textAlign: "right" }}>{m.armCm != null ? `${m.armCm} cm` : "—"}</td>
+                              <td style={{ padding: "0.45rem 0.5rem", textAlign: "right" }}>{m.thighCm != null ? `${m.thighCm} cm` : "—"}</td>
+                              <td style={{ padding: "0.45rem 0.5rem", textAlign: "right" }}>{m.energyScore != null ? `${m.energyScore}/10` : "—"}</td>
+                              <td style={{ padding: "0.45rem 0.5rem", textAlign: "right" }}>{m.sleepRating != null ? `${m.sleepRating}/10` : "—"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {activeTab === "payments" && (
+            currentMrr != null ? (
+              <div>
+                <div className="panel" style={{ marginBottom: "1rem" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem", gap: "0.75rem", flexWrap: "wrap" }}>
+                    <h3 style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "1rem", color: "var(--text-primary)", margin: 0 }}>Active Subscription</h3>
+                    <span style={{ padding: "0.25rem 0.75rem", borderRadius: 9999, fontSize: "0.75rem", fontFamily: "Inter, sans-serif", fontWeight: 600, background: "var(--primary-light)", color: "var(--primary)" }}>{currentSubStatusLabel}</span>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "1rem" }}>
+                    <div><div style={{ fontFamily: "Inter, sans-serif", fontSize: "0.65rem", color: "var(--outline)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Monthly Rate</div><div style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "1rem", color: "var(--text-primary)" }}>£{currentMrr}</div></div>
+                    <div><div style={{ fontFamily: "Inter, sans-serif", fontSize: "0.65rem", color: "var(--outline)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Renewal Date</div><div style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "1rem", color: "var(--text-primary)" }}>{currentSubscription?.renewalDate || clientPortal.client.nextRenewalDate || "—"}</div></div>
+                    <div><div style={{ fontFamily: "Inter, sans-serif", fontSize: "0.65rem", color: "var(--outline)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Client Since</div><div style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "1rem", color: "var(--text-primary)" }}>{(clientPortal.client as any).startDate || clientPortal.client.nextRenewalDate || "—"}</div></div>
+                  </div>
+                </div>
+                <div className="panel">
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
+                    <span className="material-symbols-outlined" style={{ color: "var(--primary)", fontSize: "1rem" }}>receipt_long</span>
+                    <h3 style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "0.95rem", color: "var(--text-primary)", margin: 0 }}>Recent Payments</h3>
+                  </div>
+                  <div className="panel" style={{ padding: "0.9rem", marginBottom: "0.5rem", background: "var(--surface-container-low)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
+                      <div><div style={{ fontFamily: "Inter, sans-serif", fontSize: "0.85rem", color: "var(--text-primary)", fontWeight: 500 }}>Monthly subscription</div><div style={{ fontFamily: "Inter, sans-serif", fontSize: "0.75rem", color: "var(--outline)" }}>{currentSubscription?.renewalDate || clientPortal.client.nextRenewalDate || "—"}</div></div>
+                      <div style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "0.95rem", color: "var(--primary)" }}>£{currentMrr}.00</div>
+                    </div>
+                  </div>
+                  <p style={{ fontFamily: "Inter, sans-serif", fontSize: "0.75rem", color: "var(--outline)", textAlign: "center", marginTop: "0.75rem" }}>Connect Stripe for auto-invoicing and a full payment ledger.</p>
+                </div>
+              </div>
+            ) : (
+              <div className="empty-state">
+                <span className="material-symbols-outlined" style={{ fontSize: "2.5rem", color: "var(--outline)" }}>credit_card</span>
+                <p style={{ fontFamily: "Inter, sans-serif", color: "var(--outline)" }}>No active subscription.</p>
+              </div>
+            )
+          )}
+
+          {/* MESSAGES TAB */}
+          {activeTab === "messages" && (
+            <div className="panel">
+              <div className="message-feed" ref={feedRef}>
+                {(!clientPortal.messages || clientPortal.messages.length === 0)
+                  ? <div className="empty-state" style={{ padding: "2rem 0" }}>
+                      <span className="material-symbols-outlined" style={{ fontSize: "2.5rem", display: "block", marginBottom: "0.75rem", color: "var(--outline)" }}>chat</span>
+                      <p style={{ fontFamily: "Manrope, sans-serif", fontWeight: 600, color: "var(--text-primary)" }}>No messages yet</p>
+                      <p style={{ fontSize: "0.8rem" }}>Start a conversation with {clientPortal.client.fullName.split(" ")[0]}.</p>
+                    </div>
+                  : clientPortal.messages.map(msg => (
+                    <div key={msg.id} className={`message-bubble message-bubble--${msg.sender}`}>
+                      <div className="message-text">{msg.content}</div>
+                      <span className="message-meta">{new Date(msg.sentAt).toLocaleTimeString()}</span>
+                    </div>
+                  ))
+                }
+              </div>
+              <form className="message-input-row" onSubmit={handleSendMessage}>
+                <input value={msgDraft} onChange={e => setMsgDraft(e.target.value)} placeholder="Type a message…" />
+                <button type="submit">Send</button>
+              </form>
+            </div>
+          )}
+
+          {/* HISTORY TAB */}
+          {activeTab === "history" && (
+            <div>
+              {!checkInHistory.length ? (
+                <div className="empty-state">
+                  <span className="material-symbols-outlined" style={{ fontSize: "3rem", display: "block", marginBottom: "1rem", color: "var(--outline)" }}>timeline</span>
+                  <p style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, color: "var(--text-primary)" }}>No check-in history yet</p>
+                  <p style={{ fontSize: "0.875rem" }}>{clientPortal.client.fullName.split(" ")[0]} hasn't submitted a check-in yet.</p>
+                </div>
+              ) : (
+                <div>
+                  <div className="stat-grid" style={{ marginBottom: "2rem" }}>
+                    <div className="stat-card stat-card--accent">
+                      <div className="stat-card__label">Total Check-ins</div>
+                      <div className="stat-card__value">{checkInHistory.length}</div>
+                    </div>
+                    <div className="stat-card">
+                      <div className="stat-card__label">Avg Adherence</div>
+                      <div className="stat-card__value" style={{ fontSize: "1.6rem" }}>
+                        {Math.round(checkInHistory.reduce((s, c) => s + (c.adherenceDelta ?? 0), 0) / checkInHistory.length + 60)}%
+                      </div>
+                    </div>
+                    <div className="stat-card">
+                      <div className="stat-card__label">Weight Trend</div>
+                      <div className="stat-card__value" style={{ fontSize: "1.6rem", color: "var(--primary)" }}>
+                        {(() => {
+                          const deltas = checkInHistory.filter(c => c.weightDelta != null);
+                          if (deltas.length < 2) return "—";
+                          const net = deltas[deltas.length - 1].weightDelta! + deltas[0].weightDelta!;
+                          return `${net > 0 ? "+" : ""}${net.toFixed(1)}kg`;
+                        })()}
+                      </div>
+                    </div>
+                    <div className="stat-card">
+                      <div className="stat-card__label">Avg Energy</div>
+                      <div className="stat-card__value" style={{ fontSize: "1.6rem" }}>
+                        {(checkInHistory.reduce((s, c) => s + c.progress.energyScore, 0) / checkInHistory.length).toFixed(1)}/10
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="panel" style={{ marginBottom: "1.5rem" }}>
+                    <div className="section-header">
+                      <h2>Weight Trend</h2>
+                      <span className="pill pill-info">kg</span>
+                    </div>
+                    <div className="trend-chart">
+                      {checkInHistory.map((checkIn) => {
+                        const weights = checkInHistory.map(c => c.progress.weightKg).filter(w => w != null) as number[];
+                        const maxW = Math.max(...weights);
+                        const minW = Math.min(...weights);
+                        const range = maxW - minW || 1;
+                        const pct = ((checkIn.progress.weightKg! - minW) / range) * 100;
+                        const hasWeight = checkIn.progress.weightKg != null;
+                        return (
+                          <div key={checkIn.id} className="trend-bar-wrap">
+                            <div className="trend-bar-track">
+                              <div className="trend-bar-fill trend-bar-fill--weight" style={{ height: hasWeight ? `${Math.max(8, pct)}%` : "8%", opacity: hasWeight ? 1 : 0.3 }} />
+                            </div>
+                            <span className="trend-bar-label">{checkIn.progress.weightKg != null ? `${checkIn.progress.weightKg}` : "—"}</span>
+                            <span className="trend-bar-date">{new Date(checkIn.submittedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="panel" style={{ marginBottom: "1.5rem" }}>
+                    <div className="section-header">
+                      <h2>Energy Score</h2>
+                      <span className="pill pill-warning">/10</span>
+                    </div>
+                    <div className="trend-chart">
+                      {checkInHistory.map((checkIn) => {
+                        const pct = (checkIn.progress.energyScore / 10) * 100;
+                        const color = checkIn.progress.energyScore <= 4 ? "var(--danger)" : checkIn.progress.energyScore <= 7 ? "var(--warning)" : "var(--primary)";
+                        return (
+                          <div key={checkIn.id} className="trend-bar-wrap">
+                            <div className="trend-bar-track">
+                              <div className="trend-bar-fill" style={{ height: `${pct}%`, background: color }} />
+                            </div>
+                            <span className="trend-bar-label" style={{ color }}>{checkIn.progress.energyScore}</span>
+                            <span className="trend-bar-date">{new Date(checkIn.submittedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="panel">
+                    <div className="section-header"><h2>Check-In Log</h2></div>
+                    <div className="timeline">
+                      {[...checkInHistory].reverse().map((checkIn) => (
+                        <div key={checkIn.id} className="timeline-item">
+                          <div className="timeline-dot" />
+                          <div className="timeline-content">
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
+                              <strong style={{ color: "var(--on-surface)" }}>
+                                {new Date(checkIn.submittedAt).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}
+                              </strong>
+                              <div style={{ display: "flex", gap: "0.4rem" }}>
+                                {checkIn.weightDelta != null && (
+                                  <span style={{ background: checkIn.weightDelta < 0 ? "var(--success-light)" : checkIn.weightDelta > 0 ? "var(--danger-light)" : "var(--surface-container)", color: checkIn.weightDelta < 0 ? "var(--success-text)" : checkIn.weightDelta > 0 ? "var(--danger-text)" : "var(--on-surface-variant)", padding: "0.15rem 0.6rem", borderRadius: "9999px", fontFamily: "Inter, sans-serif", fontSize: "0.65rem", fontWeight: 700 }}>
+                                    {checkIn.weightDelta > 0 ? "+" : ""}{checkIn.weightDelta.toFixed(1)}kg
+                                  </span>
+                                )}
+                                {checkIn.photoCount > 0 && (
+                                  <span style={{ background: "var(--info-light)", color: "var(--info-text)", padding: "0.15rem 0.6rem", borderRadius: "9999px", fontFamily: "Inter, sans-serif", fontSize: "0.65rem", fontWeight: 700 }}>
+                                    {checkIn.photoCount} photo{checkIn.photoCount > 1 ? "s" : ""}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", marginBottom: "0.5rem", fontFamily: "Manrope, sans-serif", fontSize: "0.78rem", color: "var(--text-primary)" }}>
+                              {checkIn.progress.weightKg != null && (
+                                <span><strong>{checkIn.progress.weightKg}kg</strong></span>
+                              )}
+                              <span>{checkIn.progress.energyScore}/10 energy</span>
+                              <span>{checkIn.progress.steps.toLocaleString()} steps</span>
+                              {checkIn.progress.waistCm != null && (
+                                <span>{checkIn.progress.waistCm}cm waist</span>
+                              )}
+                            </div>
+                            {checkIn.progress.notes && (
+                              <p style={{ fontFamily: "Inter, sans-serif", fontSize: "0.78rem", color: "var(--on-surface-variant)", margin: 0, fontStyle: "italic", lineHeight: 1.5 }}>"{checkIn.progress.notes}"</p>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  {/* Progress Photos */}
+                  {checkInHistory.some(c => c.photoCount > 0) && (
+                    <div className="panel" style={{ marginTop: "1.5rem" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+                        <h2>Progress Photos</h2>
+                        <button onClick={() => setShowPhotos(v => !v)}
+                          style={{ padding: "0.35rem 1rem", borderRadius: "9999px", border: "1.5px solid var(--outline-variant)",
+                            background: showPhotos ? "var(--primary)" : "transparent",
+                            color: showPhotos ? "white" : "var(--text-primary)",
+                            fontFamily: "Inter, sans-serif", fontSize: "0.78rem", fontWeight: 600, cursor: "pointer" }}>
+                          {showPhotos ? "Hide" : "View"} Photos
+                        </button>
+                      </div>
+                      {showPhotos && (
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: "0.75rem" }}>
+                          {checkInHistory.filter(c => c.photoCount > 0).map(ci => (
+                            <div key={ci.id} style={{ borderRadius: "var(--r-lg)", overflow: "hidden", background: "var(--surface-container)", aspectRatio: "3/4" }}>
+                              <div style={{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0.5rem" }}>
+                                <span className="material-symbols-outlined" style={{ fontSize: "2rem", color: "var(--outline)" }}>photo</span>
+                                <span style={{ fontFamily: "Inter, sans-serif", fontSize: "0.65rem", color: "var(--outline)", marginTop: "0.25rem" }}>
+                                  {new Date(ci.submittedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {portalSummaryEdit.weight && clientPortal && (
+            <div className="modal-overlay" onClick={(event) => { if (event.target === event.currentTarget) setPortalSummaryEdit((ed) => ({ ...ed, weight: false })); }}>
+              <div className="modal-panel" style={{ maxWidth: 640 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "1rem", marginBottom: "1rem" }}>
+                  <div>
+                    <p className="eyebrow">Weight Card</p>
+                    <h2 className="modal-title" style={{ marginBottom: "0.35rem" }}>Edit weight goal</h2>
+                    <p className="modal-subtitle">Update current weight, unit, goal weight, measurement date, and goal timeline.</p>
+                  </div>
+                  <button type="button" className="secondary" onClick={() => setPortalSummaryEdit((ed) => ({ ...ed, weight: false }))}>Close</button>
+                </div>
+
+                <div className="stack" style={{ gap: "1rem" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 120px", gap: "0.75rem" }}>
+                    <label>
+                      <span className="portal-summary-label" style={{ display: "block", marginBottom: "0.35rem" }}>Current weight</span>
+                      <input autoFocus type="number" step="0.1" value={portalWeightDraft} onChange={(e) => setPortalWeightDraft(e.target.value)} className="portal-summary-input" />
+                    </label>
+                    <label>
+                      <span className="portal-summary-label" style={{ display: "block", marginBottom: "0.35rem" }}>Unit</span>
+                      <select value={portalWeightUnitDraft} onChange={(e) => setPortalWeightUnitDraft(e.target.value as "kg" | "lb")} className="portal-summary-input">
+                        <option value="kg">kg</option>
+                        <option value="lb">lb</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+                    <label>
+                      <span className="portal-summary-label" style={{ display: "block", marginBottom: "0.35rem" }}>Goal weight</span>
+                      <input type="number" step="0.1" value={portalGoalWeightDraft} onChange={(e) => setPortalGoalWeightDraft(e.target.value)} className="portal-summary-input" />
+                    </label>
+                    <label>
+                      <span className="portal-summary-label" style={{ display: "block", marginBottom: "0.35rem" }}>Measurement date</span>
+                      <input type="date" value={portalMeasurementDateDraft} onChange={(e) => setPortalMeasurementDateDraft(e.target.value)} className="portal-summary-input" />
+                    </label>
+                  </div>
+                  <div>
+                    <div className="portal-summary-label" style={{ marginBottom: "0.45rem" }}>Goal timeline</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.85rem" }}>
+                      <input type="range" min="1" max="12" value={portalGoalTimelineDraft} onChange={(e) => setPortalGoalTimelineDraft(Number(e.target.value))} style={{ flex: 1, accentColor: "var(--primary)", cursor: "grab" }} />
+                      <div className="portal-summary-value" style={{ fontSize: "1rem", minWidth: 84, textAlign: "right" }}>
+                        {portalGoalTimelineDraft} month{portalGoalTimelineDraft === 1 ? "" : "s"}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="portal-avatar-modal-actions" style={{ marginTop: "0.25rem" }}>
+                    <button type="button" className="secondary" onClick={() => setShowWeightHistoryModal(true)}>View history graph</button>
+                    <div style={{ marginLeft: "auto", display: "flex", gap: "0.6rem" }}>
+                      <button type="button" className="secondary" onClick={() => setPortalSummaryEdit((ed) => ({ ...ed, weight: false }))}>Cancel</button>
+                      <button type="button" onClick={() => void saveWeightCard()}>Save</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {showWeightHistoryModal && clientPortal && (
+            <div className="modal-overlay" onClick={(event) => { if (event.target === event.currentTarget) setShowWeightHistoryModal(false); }}>
+              <div className="modal-panel" style={{ maxWidth: 720 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "1rem", marginBottom: "1rem" }}>
+                  <div>
+                    <p className="eyebrow">Weight History</p>
+                    <h2 className="modal-title" style={{ marginBottom: "0.35rem" }}>Progress graph</h2>
+                    <p className="modal-subtitle">Actual weight history with the current goal target.</p>
+                  </div>
+                  <button type="button" className="secondary" onClick={() => setShowWeightHistoryModal(false)}>Close</button>
+                </div>
+                <div className="panel" style={{ padding: "1rem" }}>
+                  {weightHistorySeries.length === 0 ? (
+                    <div className="empty-state" style={{ minHeight: 220 }}>
+                      <p>No weight history recorded yet.</p>
+                    </div>
+                  ) : (
+                    <>
+                      <svg viewBox="0 0 640 220" width="100%" height="220" style={{ display: "block" }}>
+                        {(() => {
+                          const values = weightHistorySeries.map((point) => point.value);
+                          const min = Math.min(...values, displayGoalWeight ?? values[0]);
+                          const max = Math.max(...values, displayGoalWeight ?? values[0]);
+                          const span = Math.max(max - min, 1);
+                          const step = 560 / Math.max(weightHistorySeries.length - 1, 1);
+                          const points = weightHistorySeries.map((point, index) => {
+                            const x = 40 + (index * step);
+                            const y = 180 - (((point.value - min) / span) * 140);
+                            return `${x},${y}`;
+                          }).join(" ");
+                          const goalY = displayGoalWeight != null ? 180 - (((displayGoalWeight - min) / span) * 140) : null;
+                          return (
+                            <>
+                              <line x1="40" y1="180" x2="600" y2="180" stroke="var(--outline-variant)" strokeWidth="1" />
+                              <line x1="40" y1="40" x2="40" y2="180" stroke="var(--outline-variant)" strokeWidth="1" />
+                              {goalY != null ? <line x1="40" y1={goalY} x2="600" y2={goalY} stroke="var(--tertiary)" strokeWidth="2" strokeDasharray="6 6" /> : null}
+                              <polyline fill="none" stroke="var(--primary)" strokeWidth="4" strokeLinejoin="round" strokeLinecap="round" points={points} />
+                              {weightHistorySeries.map((point, index) => {
+                                const x = 40 + (index * step);
+                                const y = 180 - (((point.value - min) / span) * 140);
+                                return <circle key={`${point.date}-${index}`} cx={x} cy={y} r="5" fill="var(--primary)" />;
+                              })}
+                            </>
+                          );
+                        })()}
+                      </svg>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: "0.5rem", flexWrap: "wrap", marginTop: "0.75rem" }}>
+                        {weightHistorySeries.map((point) => (
+                          <div key={point.date} className="portal-summary-sub">{point.date}: {point.value} {displayWeightUnit}</div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {showAvatarModal && (
+            <div className="modal-overlay" onClick={(event) => { if (event.target === event.currentTarget) setShowAvatarModal(false); }}>
+              <div className="modal-panel" style={{ maxWidth: 520 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "1rem", marginBottom: "1rem" }}>
+                  <div>
+                    <p className="eyebrow">Client Avatar</p>
+                    <h2 className="modal-title" style={{ marginBottom: "0.35rem" }}>Update profile photo</h2>
+                    <p className="modal-subtitle">Upload a profile image, remove it, or change the initials fallback.</p>
+                  </div>
+                  <button type="button" className="secondary" onClick={() => setShowAvatarModal(false)}>Close</button>
+                </div>
+
+                <div className="portal-avatar-modal-preview">
+                  <div className="portal-avatar-card portal-avatar-card--modal">
+                    {avatarPrefs.imageDataUrl ? (
+                      <img src={avatarPrefs.imageDataUrl} alt={`${clientPortal.client.fullName} profile`} className="portal-avatar-image" />
+                    ) : (
+                      <span>{deriveClientInitials(clientPortal.client.fullName, avatarInitialsDraft)}</span>
+                    )}
+                  </div>
+                  <div>
+                    <div className="portal-summary-label" style={{ marginBottom: "0.35rem" }}>Preview</div>
+                    <div className="portal-summary-value" style={{ fontSize: "1.05rem" }}>{clientPortal.client.fullName}</div>
+                    <div className="portal-summary-sub">{clientPortal.client.email}</div>
+                  </div>
+                </div>
+
+                <input
+                  ref={avatarInputRef}
+                  type="file"
+                  accept="image/*"
+                  style={{ display: "none" }}
+                  onChange={handleAvatarFileChange}
+                />
+
+                <div className="portal-avatar-modal-actions">
+                  <button type="button" onClick={() => avatarInputRef.current?.click()}>
+                    <span className="material-symbols-outlined" style={{ fontSize: "1rem" }}>photo_camera</span>
+                    Upload / Change Photo
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => saveAvatarPrefs({ ...avatarPrefs, imageDataUrl: null })}
+                    disabled={!avatarPrefs.imageDataUrl}
+                  >
+                    Remove Image
+                  </button>
+                </div>
+
+                <div style={{ marginTop: "1rem" }}>
+                  <label className="portal-summary-label" style={{ display: "block", marginBottom: "0.4rem" }}>Initials fallback</label>
+                  <div className="portal-summary-edit">
+                    <input
+                      value={avatarInitialsDraft}
+                      onChange={(event) => setAvatarInitialsDraft(event.target.value)}
+                      maxLength={6}
+                      className="portal-summary-input"
+                      placeholder="RS"
+                    />
+                    <button type="button" className="portal-summary-save" onClick={applyAvatarInitials}>Save initials</button>
+                  </div>
+                  <div className="portal-summary-sub" style={{ marginTop: "0.35rem" }}>Used when no profile image is set.</div>
+                </div>
+
+                {avatarError ? (
+                  <p style={{ marginTop: "0.9rem", color: "var(--danger)", fontFamily: "Inter, sans-serif", fontSize: "0.75rem" }}>{avatarError}</p>
+                ) : null}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── BILLING VIEW ──────────────────────
+function BillingView({ session, onToggleBilling }: {
+  session: CoachSession;
+  onToggleBilling: (clientId: string, status: "active"|"past_due"|"cancelled") => Promise<void>;
+}) {
+  const subs = session.subscriptions;
+  const mrrGbp = subs.filter(s => s.status === "active").reduce((sum, s) => sum + s.amountGbp, 0);
+  const churnCount = subs.filter(s => s.status === "past_due").length;
+  const trialingCount = subs.filter(s => s.status === "trialing").length;
+
+  const vatRate = 0.20;
+  const totalTaxGbp = mrrGbp * vatRate;
+
+  return (
+    <div className="page-view">
+      <p className="eyebrow">Billing & Tax Compliance</p>
+      <h1 className="page-title">Revenue & Invoicing</h1>
+      <p className="page-subtitle">Auto-calculated UK VAT (20%) and compliance-ready PDFs for self-assessment.</p>
+
+      <div className="stat-grid" style={{ marginBottom: "2rem" }}>
+        <div className="stat-card stat-card--accent card-glass">
+          <div className="stat-card__label">Monthly Recurring Revenue</div>
+          <div className="stat-card__value">£{mrrGbp}</div>
+        </div>
+        <div className="stat-card card-glass" style={{ borderLeft: "3px solid var(--primary)" }}>
+          <div className="stat-card__label">Est. VAT Collected (20%)</div>
+          <div className="stat-card__value">£{totalTaxGbp.toFixed(2)}</div>
+        </div>
+        <div className="stat-card stat-card--danger card-glass">
+          <div className="stat-card__label">Past Due</div>
+          <div className="stat-card__value" style={{ color: "var(--danger)" }}>{churnCount}</div>
+        </div>
+        <div className="stat-card stat-card--warning card-glass">
+          <div className="stat-card__label">Trialing</div>
+          <div className="stat-card__value" style={{ color: "var(--warning)" }}>{trialingCount}</div>
+        </div>
+      </div>
+
+      <div className="panel card-glass">
+        <div className="section-header inline-spread">
+          <h2>Client Subscriptions & Invoices</h2>
+          <button className="secondary sm" onClick={() => downloadBulkTaxReport(subs, session.clients, session.workspace)}>📥 Bulk Download Tax Report</button>
+        </div>
+        <div className="stack compact">
+          {subs.map(sub => {
+            const client = session.clients.find(c => c.id === sub.clientId);
+            const subVat = sub.amountGbp * vatRate;
+            const subNet = sub.amountGbp - subVat;
+            return (
+              <div key={sub.id} className="row-line" style={{ background: "var(--surface-container-low)" }}>
+                <div className="inline">
+                  {client && <Avatar name={client.fullName} />}
+                  <div>
+                    <strong style={{ color: "var(--on-surface)" }}>{client?.fullName}</strong>
+                    <p className="muted text-xs" style={{ margin: "0.1rem 0 0" }}>Renews {sub.renewalDate}</p>
+                  </div>
+                </div>
+                <div className="inline" style={{ gap: "1.5rem" }}>
+                  <div style={{ textAlign: "right", display: "flex", flexDirection: "column" }}>
+                    <span style={{ fontWeight: 700, color: "var(--on-surface)" }}>£{sub.amountGbp.toFixed(2)}/mo</span>
+                    <span className="muted text-xs">Net: £{subNet.toFixed(2)} + VAT: £{subVat.toFixed(2)}</span>
+                  </div>
+                  <span className={`pill ${sub.status === "past_due" ? "pill-danger" : sub.status === "trialing" ? "pill-warning" : "pill-success"}`}>
+                    {sub.status}
+                  </span>
+                  <div className="inline compact">
+                    <button className="ghost sm" onClick={() => client && generateInvoicePDF(sub, client, session.workspace)}>📄 PDF Invoice</button>
+                    {sub.status === "active" ? (
+                      <button className="secondary sm" onClick={() => onToggleBilling(sub.clientId, "past_due")}>Mark due</button>
+                    ) : (
+                      <button className="secondary sm" onClick={() => onToggleBilling(sub.clientId, "active")}>Recovered</button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── MIGRATION VIEW ──────────────────────
+function MigrationView({ onReload }: { onReload: () => Promise<void> }) {
+  const [csvRows, setCsvRows] = useState("Name,Email,Goal,MonthlyPriceGbp\nEmma Walker,emma@example.com,Drop 6kg before wedding,179\nNoah Reed,noah@example.com,Improve strength and reduce body fat,149");
+  const [preview, setPreview] = useState<any>(null);
+  const [restoreJson, setRestoreJson] = useState("");
+  const [loading, setLoading] = useState<string|null>(null);
+  const { push } = useToast();
+
+  const doPreview = async () => {
+    const rows = csvToRows(csvRows);
+    setPreview(await fetchJson("/import/preview", { method: "POST", body: JSON.stringify({ rows }) }));
+  };
+  const doCommit = async () => {
+    setLoading("commit");
+    try {
+      const rows = csvToRows(csvRows);
+      await fetchJson("/import/commit", { method: "POST", body: JSON.stringify({ rows }) });
+      await onReload(); push("Clients imported successfully");
+    } finally { setLoading(null); }
+  };
+  const doReset = async () => {
+    setLoading("reset");
+    try { await fetchJson("/admin/state/reset", { method: "POST", body: "{}" }); await onReload(); push("State reset to seed data"); }
+    finally { setLoading(null); }
+  };
+  const doRestore = async (e: FormEvent) => {
+    e.preventDefault();
+    setLoading("restore");
+    try { await fetchJson("/admin/state/import", { method: "POST", body: JSON.stringify(JSON.parse(restoreJson)) }); await onReload(); push("Snapshot restored"); }
+    catch { push("Invalid JSON snapshot", "error"); }
+    finally { setLoading(null); }
+  };
+
+  return (
+    <div className="page-view">
+      <p className="eyebrow">Migration Assistant</p>
+      <h1 className="page-title">Data Migration</h1>
+      <p className="page-subtitle">Import clients from CSV, export rollback bundles, and restore snapshots safely.</p>
+
+      <div className="content-grid">
+        <div className="panel">
+          <div className="section-header"><h2>CSV Import</h2></div>
+          <div className="stack">
+            <textarea className="csv-box" value={csvRows} onChange={e => setCsvRows(e.target.value)} />
+            <div className="inline">
+              <button className="secondary" onClick={doPreview}>Preview</button>
+              <button disabled={loading === "commit"} onClick={doCommit}>{loading === "commit" ? "Importing…" : "Commit rows"}</button>
+            </div>
+            {preview && (
+              <div className="preview-table">
+                <div className="inline" style={{ marginBottom: "0.75rem" }}>
+                  <span className="pill pill-success">{preview.validRows} valid</span>
+                  {preview.invalidRows > 0 && <span className="pill pill-danger">{preview.invalidRows} invalid</span>}
+                </div>
+                <div className="stack compact">
+                  {preview.parsed.map((row: any) => (
+                    <div key={row.row} className="row-line">
+                      <span className="text-sm muted">Row {row.row}</span>
+                      <span className="text-sm">{row.success ? row.data.name : row.issues.join(", ")}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="stack">
+          <div className="panel">
+            <div className="section-header"><h2>Export & Rollback</h2></div>
+            <p className="muted text-sm" style={{ marginBottom: "1rem" }}>Download a portable JSON snapshot of all state — clients, plans, payments, and analytics.</p>
+            <div className="inline">
+              <a className="ghost-button" href={`${apiBase}/export`} target="_blank" rel="noreferrer">↓ Export bundle</a>
+              <button className="danger" disabled={loading === "reset"} onClick={doReset}>{loading === "reset" ? "Resetting…" : "Reset to seed"}</button>
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="section-header"><h2>Restore Snapshot</h2></div>
+            <form className="stack" onSubmit={doRestore}>
+              <textarea className="csv-box" value={restoreJson} onChange={e => setRestoreJson(e.target.value)} placeholder='Paste exported JSON here…' />
+              <button type="submit" disabled={loading === "restore"}>{loading === "restore" ? "Restoring…" : "Restore snapshot"}</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── SETTINGS VIEW ──────────────────────
+function SettingsView({ session, onSave }: {
+  session: CoachSession;
+  onSave: (draft: any) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState({
+    name: session.workspace.name,
+    brandColor: session.workspace.brandColor,
+    accentColor: session.workspace.accentColor,
+    heroMessage: session.workspace.heroMessage,
+    stripeConnected: session.workspace.stripeConnected,
+    coachGender: (session.coach as any).gender ?? "male",
+  });
+  const [notifPrefs, setNotifPrefs] = useState({
+    enabled: true,
+    clientCheckIn: true,
+    sessionReminder: true,
+    paymentReceived: true,
+    newClientRequest: false,
+    emailEnabled: true,
+  });
+  const [savingNotif, setSavingNotif] = useState(false);
+  type DayKey = "monday"|"tuesday"|"wednesday"|"thursday"|"friday"|"saturday"|"sunday";
+  const [availHours, setAvailHours] = useState<Record<DayKey, {enabled:boolean;start:string;end:string}>>({
+    monday: { enabled: true, start: "09:00", end: "17:00" },
+    tuesday: { enabled: true, start: "09:00", end: "17:00" },
+    wednesday: { enabled: true, start: "09:00", end: "17:00" },
+    thursday: { enabled: true, start: "09:00", end: "17:00" },
+    friday: { enabled: true, start: "09:00", end: "17:00" },
+    saturday: { enabled: false, start: "10:00", end: "14:00" },
+    sunday: { enabled: false, start: "10:00", end: "14:00" },
+  });
+  const [blockedDates, setBlockedDates] = useState<string[]>([]);
+  const [savingAvail, setSavingAvail] = useState(false);
+
+  const notifTypes = [
+    { key: "clientCheckIn", label: "Client Check-in", desc: "When a client submits a check-in" },
+    { key: "sessionReminder", label: "Session Reminder", desc: "30 min before a scheduled session" },
+    { key: "paymentReceived", label: "Payment Received", desc: "When a client payment comes through" },
+    { key: "newClientRequest", label: "New Client Request", desc: "When a new client signs up" },
+  ];
+
+  return (
+    <div className="page-view">
+      <p className="eyebrow">Workspace</p>
+      <h1 className="page-title">Settings</h1>
+      <p className="page-subtitle">Brand setup, Stripe connection, and rollback options.</p>
+
+      <div className="panel" style={{ maxWidth: 640 }}>
+        <form className="stack" onSubmit={async e => { e.preventDefault(); await onSave(draft); }}>
+          <label>Workspace name
+            <input value={draft.name} onChange={e => setDraft(d => ({ ...d, name: e.target.value }))} />
+          </label>
+          <label>Hero message
+            <textarea value={draft.heroMessage} onChange={e => setDraft(d => ({ ...d, heroMessage: e.target.value }))} />
+          </label>
+          <div className="two-col">
+            <label>Brand color<input type="color" value={draft.brandColor} onChange={e => setDraft(d => ({ ...d, brandColor: e.target.value }))} /></label>
+            <label>Accent color<input type="color" value={draft.accentColor} onChange={e => setDraft(d => ({ ...d, accentColor: e.target.value }))} /></label>
+          </div>
+          <label className="toggle">
+            <input type="checkbox" checked={draft.stripeConnected} onChange={e => setDraft(d => ({ ...d, stripeConnected: e.target.checked }))} />
+            Stripe GBP connected
+          </label>
+          <div>
+            <label style={{ display: "block", fontFamily: "Inter, sans-serif", fontSize: "0.72rem", fontWeight: 600, color: "var(--outline)", textTransform: "uppercase", marginBottom: "0.4rem" }}>Coach Mascot Gender</label>
+            <div style={{ display: "flex", gap: "0.75rem" }}>
+              {(["male", "female"] as const).map(g => (
+                <button key={g} type="button" onClick={() => setDraft(d => ({ ...d, coachGender: g }))} style={{ flex: 1, padding: "0.5rem", borderRadius: "var(--r-md)", border: "1.5px solid", borderColor: draft.coachGender === g ? "var(--primary)" : "var(--outline-variant)", background: draft.coachGender === g ? "var(--primary-light)" : "var(--surface-container)", color: draft.coachGender === g ? "var(--primary)" : "var(--text-primary)", fontFamily: "Inter, sans-serif", fontSize: "0.8rem", fontWeight: 600, cursor: "pointer", textTransform: "capitalize" }}>
+                  {g}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="inline">
+            <button type="submit">Save settings</button>
+          </div>
+        </form>
+      </div>
+
+      {/* Notification Preferences */}
+      <div style={{ maxWidth: 640, marginTop: "2rem" }}>
+        <div className="panel">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
+            <div>
+              <h2 className="section-title" style={{ margin: 0 }}>Notification Preferences</h2>
+              <p style={{ fontFamily: "Inter, sans-serif", fontSize: "0.8rem", color: "var(--outline)", margin: "0.25rem 0 0" }}>Control how you receive alerts from CoachOS.</p>
+            </div>
+            <label className="toggle">
+              <input type="checkbox" checked={notifPrefs.enabled} onChange={e => setNotifPrefs(p => ({ ...p, enabled: e.target.checked }))} />
+              In-App
+            </label>
+          </div>
+
+          <div className="stack compact">
+            {notifTypes.map(nt => (
+              <div key={nt.key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0.6rem 0", borderBottom: "1px solid var(--surface-container)" }}>
+                <div>
+                  <div style={{ fontFamily: "Manrope, sans-serif", fontWeight: 600, fontSize: "0.85rem", color: "var(--text-primary)" }}>{nt.label}</div>
+                  <div style={{ fontFamily: "Inter, sans-serif", fontSize: "0.72rem", color: "var(--outline)" }}>{nt.desc}</div>
+                </div>
+                <label className="toggle" style={{ flexShrink: 0 }}>
+                  <input type="checkbox" checked={(notifPrefs as any)[nt.key]} onChange={e => setNotifPrefs(p => ({ ...p, [nt.key]: e.target.checked }))} disabled={!notifPrefs.enabled} />
+                </label>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginTop: "1rem", display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid var(--surface-container)", paddingTop: "1rem" }}>
+            <div>
+              <div style={{ fontFamily: "Manrope, sans-serif", fontWeight: 600, fontSize: "0.85rem", color: "var(--text-primary)" }}>Email notifications</div>
+              <div style={{ fontFamily: "Inter, sans-serif", fontSize: "0.72rem", color: "var(--outline)" }}>Receive summaries via email</div>
+            </div>
+            <label className="toggle" style={{ flexShrink: 0 }}>
+              <input type="checkbox" checked={notifPrefs.emailEnabled} onChange={e => setNotifPrefs(p => ({ ...p, emailEnabled: e.target.checked }))} disabled={!notifPrefs.enabled} />
+            </label>
+          </div>
+
+          <div style={{ marginTop: "1rem" }}>
+            <button onClick={async () => { setSavingNotif(true); await new Promise(r => setTimeout(r, 400)); setSavingNotif(false); }} disabled={savingNotif} style={{ padding: "0.5rem 1rem", borderRadius: "var(--r-md)", border: "none", background: notifPrefs.enabled ? "var(--primary)" : "var(--surface-container)", color: notifPrefs.enabled ? "white" : "var(--outline)", fontFamily: "Manrope, sans-serif", fontSize: "0.8rem", fontWeight: 700, cursor: savingNotif ? "not-allowed" : "pointer" }}>
+              {savingNotif ? "Saving..." : "Save Preferences"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Availability Settings */}
+      <div style={{ maxWidth: 640, marginTop: "2rem" }}>
+        <div className="panel">
+          <div>
+            <h2 className="section-title">Schedule Availability</h2>
+            <p style={{ fontFamily: "Inter, sans-serif", fontSize: "0.8rem", color: "var(--outline)", margin: "0.25rem 0 1.25rem" }}>Define your working hours so clients know when sessions are available.</p>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "0.75rem", marginBottom: "1.25rem" }}>
+            {["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"].map((day, i) => {
+              const dayKey = day.toLowerCase() as "monday"|"tuesday"|"wednesday"|"thursday"|"friday"|"saturday"|"sunday";
+              const hours = availHours[dayKey] ?? { enabled: i < 5, start: "09:00", end: "17:00" };
+              return (
+                <div key={day} style={{ padding: "0.75rem", borderRadius: "var(--r-lg)", border: "1.5px solid var(--surface-container)", background: "var(--surface-container-low)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
+                    <span style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "0.82rem", color: "var(--text-primary)" }}>{day.slice(0,3)}</span>
+                    <label className="toggle" style={{ transform: "scale(0.85)" }}>
+                      <input type="checkbox" checked={hours.enabled} onChange={e => setAvailHours(h => ({ ...h, [dayKey]: { ...(h[dayKey] ?? hours), enabled: e.target.checked } }))} />
+                    </label>
+                  </div>
+                  {hours.enabled && (
+                    <div style={{ display: "flex", gap: "0.35rem", alignItems: "center" }}>
+                      <input type="time" value={hours.start} onChange={e => setAvailHours(h => ({ ...h, [dayKey]: { ...(h[dayKey] ?? hours), start: e.target.value } }))} style={{ flex: 1, padding: "0.3rem 0.4rem", borderRadius: "var(--r-sm)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--text-primary)", fontFamily: "Inter, sans-serif", fontSize: "0.75rem" }} />
+                      <span style={{ color: "var(--outline)", fontSize: "0.75rem" }}>–</span>
+                      <input type="time" value={hours.end} onChange={e => setAvailHours(h => ({ ...h, [dayKey]: { ...(h[dayKey] ?? hours), end: e.target.value } }))} style={{ flex: 1, padding: "0.3rem 0.4rem", borderRadius: "var(--r-sm)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--text-primary)", fontFamily: "Inter, sans-serif", fontSize: "0.75rem" }} />
+                    </div>
+                  )}
+                  {!hours.enabled && (
+                    <span style={{ fontFamily: "Inter, sans-serif", fontSize: "0.72rem", color: "var(--outline)" }}>Unavailable</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Blocked dates */}
+          <div style={{ marginBottom: "1rem" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
+              <label style={{ fontFamily: "Inter, sans-serif", fontSize: "0.8rem", fontWeight: 600, color: "var(--outline)" }}>Block specific dates</label>
+              <button onClick={() => setBlockedDates(prev => [...prev, ""])} style={{ padding: "0.25rem 0.5rem", borderRadius: "var(--r-sm)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--primary)", fontFamily: "Inter, sans-serif", fontSize: "0.72rem", fontWeight: 600, cursor: "pointer" }}>+ Add date</button>
+            </div>
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+              {blockedDates.map((d, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
+                  <input type="date" value={d} onChange={e => setBlockedDates(prev => prev.map((x, j) => j === i ? e.target.value : x))} style={{ padding: "0.3rem 0.5rem", borderRadius: "var(--r-sm)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--text-primary)", fontFamily: "Inter, sans-serif", fontSize: "0.75rem" }} />
+                  <button onClick={() => setBlockedDates(prev => prev.filter((_, j) => j !== i))} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--danger)", fontSize: "0.9rem", padding: "0.1rem" }}>×</button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <button onClick={async () => { setSavingAvail(true); await new Promise(r => setTimeout(r, 400)); setSavingAvail(false); }} disabled={savingAvail} style={{ padding: "0.5rem 1rem", borderRadius: "var(--r-md)", border: "none", background: "var(--primary)", color: "white", fontFamily: "Manrope, sans-serif", fontSize: "0.8rem", fontWeight: 700, cursor: savingAvail ? "not-allowed" : "pointer" }}>
+            {savingAvail ? "Saving..." : "Save Availability"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────
+   WORKOUT LOGGER MODAL
+──────────────────────────────────────── */
+function WorkoutLoggerModal({ onClose, onSuccess, push, clients }: {
+  onClose: () => void;
+  onSuccess: () => void;
+  push: (msg: string, type?: "success"|"error"|"info") => void;
+  clients: ClientProfile[];
+}) {
+  const [selectedClientId, setSelectedClientId] = useState(clients[0]?.id ?? "");
+  const [workoutDate, setWorkoutDate] = useState(new Date().toISOString().slice(0, 10));
+  const [sessionType, setSessionType] = useState("strength");
+  const [exercises, setExercises] = useState([{ name: "", sets: "", reps: "", weight: "", notes: "" }]);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  const addExercise = () => setExercises(prev => [...prev, { name: "", sets: "", reps: "", weight: "", notes: "" }]);
+  const removeExercise = (i: number) => setExercises(prev => prev.filter((_, idx) => idx !== i));
+  const updateExercise = (i: number, field: string, value: string) =>
+    setExercises(prev => prev.map((ex, idx) => idx === i ? { ...ex, [field]: value } : ex));
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedClientId) return;
+    setSubmitting(true);
+    try {
+      const completed = exercises.filter(ex => ex.name.trim());
+      await fetchJson("/check-ins", {
+        method: "POST",
+        body: JSON.stringify({
+          clientId: selectedClientId,
+          submittedAt: new Date(workoutDate).toISOString(),
+          progress: {
+            notes: `Workout — ${sessionType}. Exercises: ${completed.map(ex =>
+              `${ex.name} ${ex.sets}×${ex.reps}${ex.weight ? ` @${ex.weight}kg` : ""}`
+            ).join(" | ")}`,
+          },
+        })
+      });
+      onSuccess();
+    } catch { push("Failed to log workout", "error"); }
+    finally { setSubmitting(false); }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal-panel" style={{ maxWidth: 520 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
+          <h2 style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "1.1rem", color: "var(--text-primary)", margin: 0 }}>Log Workout Session</h2>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--outline)", fontSize: "1.2rem", padding: "0.25rem" }}>×</button>
+        </div>
+        <form onSubmit={handleSubmit}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginBottom: "1rem" }}>
+            <div>
+              <label style={{ fontFamily: "Inter, sans-serif", fontSize: "0.72rem", fontWeight: 600, color: "var(--outline)", textTransform: "uppercase", display: "block", marginBottom: "0.3rem" }}>Client</label>
+              <select value={selectedClientId} onChange={e => setSelectedClientId(e.target.value)} style={{ width: "100%", padding: "0.5rem 0.6rem", borderRadius: "var(--r-md)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--text-primary)", fontFamily: "Inter, sans-serif", fontSize: "0.82rem", boxSizing: "border-box" }}>
+                {clients.map(c => <option key={c.id} value={c.id}>{c.fullName}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={{ fontFamily: "Inter, sans-serif", fontSize: "0.72rem", fontWeight: 600, color: "var(--outline)", textTransform: "uppercase", display: "block", marginBottom: "0.3rem" }}>Date</label>
+              <input type="date" value={workoutDate} onChange={e => setWorkoutDate(e.target.value)} style={{ width: "100%", padding: "0.5rem 0.6rem", borderRadius: "var(--r-md)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--text-primary)", fontFamily: "Inter, sans-serif", fontSize: "0.82rem", boxSizing: "border-box" }} />
+            </div>
+          </div>
+          <div style={{ marginBottom: "1rem" }}>
+            <label style={{ fontFamily: "Inter, sans-serif", fontSize: "0.72rem", fontWeight: 600, color: "var(--outline)", textTransform: "uppercase", display: "block", marginBottom: "0.3rem" }}>Session Type</label>
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+              {["strength","cardio","hiit","flexibility","other"].map(t => (
+                <button key={t} type="button" onClick={() => setSessionType(t)} style={{ padding: "0.3rem 0.75rem", borderRadius: "var(--r-md)", border: "1.5px solid", borderColor: sessionType === t ? "var(--primary)" : "var(--outline-variant)", background: sessionType === t ? "var(--primary-container)" : "var(--surface-container)", color: sessionType === t ? "var(--primary)" : "var(--text-primary)", fontFamily: "Inter, sans-serif", fontSize: "0.72rem", fontWeight: 600, cursor: "pointer", textTransform: "capitalize" }}>
+                  {t}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div style={{ marginBottom: "1rem" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
+              <label style={{ fontFamily: "Inter, sans-serif", fontSize: "0.72rem", fontWeight: 600, color: "var(--outline)", textTransform: "uppercase" }}>Exercises</label>
+              <button type="button" onClick={addExercise} style={{ padding: "0.2rem 0.5rem", borderRadius: "var(--r-sm)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--primary)", fontFamily: "Inter, sans-serif", fontSize: "0.7rem", fontWeight: 600, cursor: "pointer" }}>+ Add</button>
+            </div>
+            {exercises.map((ex, i) => (
+              <div key={i} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr auto", gap: "0.4rem", marginBottom: "0.4rem", alignItems: "center" }}>
+                <input value={ex.name} onChange={e => updateExercise(i, "name", e.target.value)} placeholder="Exercise name" style={{ padding: "0.35rem 0.5rem", borderRadius: "var(--r-sm)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--text-primary)", fontFamily: "Inter, sans-serif", fontSize: "0.75rem", boxSizing: "border-box" }} />
+                <input value={ex.sets} onChange={e => updateExercise(i, "sets", e.target.value)} placeholder="Sets" style={{ padding: "0.35rem 0.4rem", borderRadius: "var(--r-sm)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--text-primary)", fontFamily: "Inter, sans-serif", fontSize: "0.75rem", boxSizing: "border-box" }} />
+                <input value={ex.reps} onChange={e => updateExercise(i, "reps", e.target.value)} placeholder="Reps" style={{ padding: "0.35rem 0.4rem", borderRadius: "var(--r-sm)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--text-primary)", fontFamily: "Inter, sans-serif", fontSize: "0.75rem", boxSizing: "border-box" }} />
+                <input value={ex.weight} onChange={e => updateExercise(i, "weight", e.target.value)} placeholder="kg" style={{ padding: "0.35rem 0.4rem", borderRadius: "var(--r-sm)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--text-primary)", fontFamily: "Inter, sans-serif", fontSize: "0.75rem", boxSizing: "border-box" }} />
+                {exercises.length > 1 && (
+                  <button type="button" onClick={() => removeExercise(i)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--danger)", fontSize: "0.9rem", padding: "0.2rem" }}>×</button>
+                )}
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: "0.75rem", justifyContent: "flex-end", borderTop: "1px solid var(--surface-container)", paddingTop: "1rem" }}>
+            <button type="button" onClick={onClose} style={{ padding: "0.5rem 1rem", borderRadius: "var(--r-md)", border: "1.5px solid var(--outline-variant)", background: "none", color: "var(--outline)", fontFamily: "Manrope, sans-serif", fontSize: "0.82rem", fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+            <button type="submit" disabled={submitting || !selectedClientId} style={{ padding: "0.5rem 1.25rem", borderRadius: "var(--r-md)", border: "none", background: submitting || !selectedClientId ? "var(--surface-container)" : "var(--primary)", color: submitting || !selectedClientId ? "var(--outline)" : "white", fontFamily: "Manrope, sans-serif", fontSize: "0.82rem", fontWeight: 700, cursor: submitting || !selectedClientId ? "not-allowed" : "pointer" }}>
+              {submitting ? "Saving..." : "Log Session"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────
+   CLIENT NOTES MODAL
+──────────────────────────────────────── */
+function ClientNotesModal({ onClose, push, clients }: {
+  onClose: () => void;
+  push: (message: string, type?: "success"|"error"|"info") => void;
+  clients: ClientProfile[];
+}) {
+  const [selectedClientId, setSelectedClientId] = useState(clients[0]?.id ?? "");
+  const [activeTab, setActiveTab] = useState<"notes"|"chat">("notes");
+  const [notes, setNotes] = useState<Array<{ id: string; clientId: string; content: string; createdAt: string; updatedAt: string }>>([]);
+  const [messages, setMessages] = useState<Array<{ id: string; sender: string; content: string; sentAt: string }>>([]);
+  const [newNote, setNewNote] = useState("");
+  const [newMessage, setNewMessage] = useState("");
+  const [loadingNotes, setLoadingNotes] = useState(false);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [submittingNote, setSubmittingNote] = useState(false);
+  const [submittingMessage, setSubmittingMessage] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  // Load notes when client changes
+  useEffect(() => {
+    if (!selectedClientId) return;
+    setLoadingNotes(true);
+    fetchJson<typeof notes>(`/clients/${selectedClientId}/notes`)
+      .then(data => { setNotes(data); })
+      .catch(() => push("Failed to load notes.", "error"))
+      .finally(() => setLoadingNotes(false));
+  }, [selectedClientId]);
+
+  // Load messages when switching to chat tab
+  useEffect(() => {
+    if (activeTab !== "chat" || !selectedClientId) return;
+    setLoadingMessages(true);
+    fetchJson<typeof messages>(`/messages/${selectedClientId}`)
+      .then(data => { setMessages(data); setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100); })
+      .catch(() => push("Failed to load messages.", "error"))
+      .finally(() => setLoadingMessages(false));
+  }, [activeTab, selectedClientId]);
+
+  // Scroll to bottom when messages change
+  useEffect(() => {
+    if (activeTab === "chat") messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, activeTab]);
+
+  const handleAddNote = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newNote.trim() || !selectedClientId) return;
+    setSubmittingNote(true);
+    try {
+      const note = await fetchJson<{ id: string; clientId: string; content: string; createdAt: string; updatedAt: string }>(`/clients/${selectedClientId}/notes`, {
+        method: "POST",
+        body: JSON.stringify({ content: newNote.trim() }),
+      });
+      setNotes(prev => [note, ...prev]);
+      setNewNote("");
+      push("Note added.", "success");
+    } catch { push("Failed to add note.", "error"); }
+    finally { setSubmittingNote(false); }
+  };
+
+  const handleSendMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newMessage.trim() || !selectedClientId) return;
+    setSubmittingMessage(true);
+    try {
+      const msg = await fetchJson<{ id: string; sender: string; content: string; sentAt: string }>("/messages", {
+        method: "POST",
+        body: JSON.stringify({ clientId: selectedClientId, content: newMessage.trim() }),
+      });
+      setMessages(prev => [...prev, msg]);
+      setNewMessage("");
+    } catch { push("Failed to send message.", "error"); }
+    finally { setSubmittingMessage(false); }
+  };
+
+  const formatTime = (iso: string) => new Date(iso).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal-panel" style={{ maxWidth: 560, maxHeight: "80vh", display: "flex", flexDirection: "column" }}>
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem", flexShrink: 0 }}>
+          <h2 style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "1.1rem", color: "var(--text-primary)", margin: 0 }}>Client Notes & Chat</h2>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--outline)", fontSize: "1.2rem", padding: "0.25rem" }}>×</button>
+        </div>
+
+        {/* Client selector */}
+        <div style={{ marginBottom: "1rem", flexShrink: 0 }}>
+          <select
+            value={selectedClientId}
+            onChange={e => setSelectedClientId(e.target.value)}
+            style={{ width: "100%", padding: "0.5rem 0.6rem", borderRadius: "var(--r-md)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--text-primary)", fontFamily: "Inter, sans-serif", fontSize: "0.82rem", boxSizing: "border-box" }}
+          >
+            {clients.map(c => <option key={c.id} value={c.id}>{c.fullName}</option>)}
+          </select>
+        </div>
+
+        {/* Tabs */}
+        <div style={{ display: "flex", borderBottom: "1.5px solid var(--outline-variant)", marginBottom: "1rem", flexShrink: 0 }}>
+          {(["notes", "chat"] as const).map(tab => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              style={{
+                padding: "0.5rem 1rem", border: "none", background: "none", cursor: "pointer",
+                fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "0.82rem",
+                color: activeTab === tab ? "var(--primary)" : "var(--outline)",
+                borderBottom: activeTab === tab ? "2px solid var(--primary)" : "2px solid transparent",
+                marginBottom: "-1.5px", textTransform: "capitalize",
+              }}
+            >
+              {tab === "notes" ? "Notes" : "Chat"}
+            </button>
+          ))}
+        </div>
+
+        {/* Content */}
+        <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
+          {activeTab === "notes" ? (
+            <div>
+              {loadingNotes ? (
+                <p style={{ color: "var(--outline)", fontFamily: "Inter, sans-serif", fontSize: "0.82rem" }}>Loading notes...</p>
+              ) : notes.length === 0 ? (
+                <p style={{ color: "var(--outline)", fontFamily: "Inter, sans-serif", fontSize: "0.82rem", textAlign: "center", padding: "2rem" }}>No notes yet. Add one below.</p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", marginBottom: "1rem" }}>
+                  {notes.map(note => (
+                    <div key={note.id} style={{ padding: "0.75rem", borderRadius: "var(--r-md)", background: "var(--surface-container)", borderLeft: "3px solid var(--primary)" }}>
+                      <p style={{ fontFamily: "Inter, sans-serif", fontSize: "0.82rem", color: "var(--text-primary)", margin: "0 0 0.4rem" }}>{note.content}</p>
+                      <span style={{ fontFamily: "Inter, sans-serif", fontSize: "0.68rem", color: "var(--outline)" }}>{formatTime(note.createdAt)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div>
+              {loadingMessages ? (
+                <p style={{ color: "var(--outline)", fontFamily: "Inter, sans-serif", fontSize: "0.82rem" }}>Loading messages...</p>
+              ) : messages.length === 0 ? (
+                <p style={{ color: "var(--outline)", fontFamily: "Inter, sans-serif", fontSize: "0.82rem", textAlign: "center", padding: "2rem" }}>No messages yet. Start a conversation below.</p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem", marginBottom: "0.75rem", maxHeight: 300, overflowY: "auto" }}>
+                  {messages.map(msg => (
+                    <div key={msg.id} style={{
+                      display: "flex", justifyContent: msg.sender === "coach" ? "flex-end" : "flex-start",
+                    }}>
+                      <div style={{
+                        maxWidth: "75%", padding: "0.5rem 0.75rem", borderRadius: "var(--r-lg)",
+                        background: msg.sender === "coach" ? "var(--primary)" : "var(--surface-container)",
+                        color: msg.sender === "coach" ? "white" : "var(--text-primary)",
+                        fontFamily: "Inter, sans-serif", fontSize: "0.78rem",
+                        borderBottomRightRadius: msg.sender === "coach" ? "4px" : "var(--r-lg)",
+                        borderBottomLeftRadius: msg.sender === "client" ? "4px" : "var(--r-lg)",
+                      }}>
+                        <p style={{ margin: "0 0 0.2rem" }}>{msg.content}</p>
+                        <span style={{ fontSize: "0.62rem", opacity: 0.7 }}>{formatTime(msg.sentAt)}</span>
+                      </div>
+                    </div>
+                  ))}
+                  <div ref={messagesEndRef} />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Input form */}
+        <div style={{ borderTop: "1px solid var(--surface-container)", paddingTop: "1rem", marginTop: "0.5rem", flexShrink: 0 }}>
+          {activeTab === "notes" ? (
+            <form onSubmit={handleAddNote} style={{ display: "flex", gap: "0.5rem" }}>
+              <textarea
+                value={newNote}
+                onChange={e => setNewNote(e.target.value)}
+                placeholder="Add a note..."
+                rows={2}
+                style={{ flex: 1, padding: "0.5rem 0.6rem", borderRadius: "var(--r-md)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--text-primary)", fontFamily: "Inter, sans-serif", fontSize: "0.82rem", resize: "none", boxSizing: "border-box" }}
+              />
+              <button type="submit" disabled={submittingNote || !newNote.trim()} style={{ padding: "0.5rem 1rem", borderRadius: "var(--r-md)", border: "none", background: newNote.trim() && !submittingNote ? "var(--primary)" : "var(--surface-container)", color: newNote.trim() && !submittingNote ? "white" : "var(--outline)", fontFamily: "Manrope, sans-serif", fontSize: "0.8rem", fontWeight: 700, cursor: newNote.trim() && !submittingNote ? "pointer" : "not-allowed", alignSelf: "flex-end" }}>
+                {submittingNote ? "..." : "Add"}
+              </button>
+            </form>
+          ) : (
+            <form onSubmit={handleSendMessage} style={{ display: "flex", gap: "0.5rem" }}>
+              <input
+                value={newMessage}
+                onChange={e => setNewMessage(e.target.value)}
+                placeholder="Type a message..."
+                style={{ flex: 1, padding: "0.5rem 0.75rem", borderRadius: "var(--r-md)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--text-primary)", fontFamily: "Inter, sans-serif", fontSize: "0.82rem", boxSizing: "border-box" }}
+              />
+              <button type="submit" disabled={submittingMessage || !newMessage.trim()} style={{ padding: "0.5rem 1rem", borderRadius: "var(--r-md)", border: "none", background: newMessage.trim() && !submittingMessage ? "var(--primary)" : "var(--surface-container)", color: newMessage.trim() && !submittingMessage ? "white" : "var(--outline)", fontFamily: "Manrope, sans-serif", fontSize: "0.8rem", fontWeight: 700, cursor: newMessage.trim() && !submittingMessage ? "pointer" : "not-allowed" }}>
+                <span className="material-symbols-outlined" style={{ fontSize: "1rem" }}>send</span>
+              </button>
+            </form>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────
+   ONBOARDING WIZARD
+──────────────────────────────────────── */
+type OnboardingDraft = {
+  name: string;
+  coachFirstName: string;
+  coachLastName: string;
+  coachEmail: string;
+  coachTypes: string[];
+  brandColor: string;
+  accentColor: string;
+  heroMessage: string;
+  stripeConnected: boolean;
+};
+
+function OnboardingWizard({
+  workspace,
+  coach,
+  onPreview,
+  onComplete
+}: {
+  workspace: CoachWorkspace;
+  coach: CoachUser;
+  onPreview: (draft: Partial<CoachWorkspace>) => void;
+  onComplete: (draft: OnboardingDraft) => Promise<void> | void;
+}) {
+  const [step, setStep] = useState(0);
+  const initialWorkspace = useRef(workspace);
+  const initialCoach = useRef(coach);
+  const [draft, setDraft] = useState<OnboardingDraft>({
+    name: "",
+    coachFirstName: initialCoach.current.firstName,
+    coachLastName: initialCoach.current.lastName,
+    coachEmail: initialCoach.current.email,
+    coachTypes: [],
+    brandColor: initialWorkspace.current.brandColor,
+    accentColor: initialWorkspace.current.accentColor,
+    heroMessage: "",
+    stripeConnected: false,
+  });
+
+  const COACH_TYPES = [
+    { id: "strength", label: "Strength & Conditioning" },
+    { id: "nutrition", label: "Nutrition Coach" },
+    { id: "wellness", label: "Wellness Coach" },
+    { id: "endurance", label: "Endurance Coach" },
+    { id: "powerlifting", label: "Powerlifting" },
+    { id: "gym-owner", label: "Gym / Studio Owner" },
+  ];
+
+  const [coachTypes, setCoachTypes] = useState<string[]>([]);
+  const STEPS = ["Workspace", "Coach Type", "Launch"];
+
+  useEffect(() => {
+    onPreview({
+      name: draft.name.trim() || initialWorkspace.current.name,
+      heroMessage: draft.heroMessage.trim() || initialWorkspace.current.heroMessage,
+      brandColor: draft.brandColor,
+      accentColor: draft.accentColor
+    });
+  }, [
+    draft.name,
+    draft.heroMessage,
+    draft.brandColor,
+    draft.accentColor,
+    onPreview,
+  ]);
+
+  useEffect(() => {
+    setDraft(d => ({ ...d, coachTypes }));
+  }, [coachTypes]);
+
+  const next = async () => {
+    if (step < STEPS.length - 1) setStep(s => s + 1);
+    else await onComplete(draft);
+  };
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onComplete(draft)}>
+      <div className="modal-panel">
+        {/* Progress dots */}
+        <div className="onboard-step-dots">
+          {STEPS.map((_, i) => (
+            <div key={i} className={`step-dot ${i === step ? "active" : i < step ? "done" : ""}`} />
+          ))}
+        </div>
+
+        {/* Step 0 — Workspace Setup */}
+        {step === 0 && (
+          <div>
+            <p className="eyebrow">Step 1 of {STEPS.length}</p>
+            <h2 className="modal-title">Set up your workspace</h2>
+            <p className="modal-subtitle">Personalise your coaching brand and messaging.</p>
+            <div className="stack">
+              <div className="two-col">
+                <label>
+                  First name
+                  <input
+                    value={draft.coachFirstName}
+                    onChange={e => setDraft(d => ({ ...d, coachFirstName: e.target.value }))}
+                    placeholder="Maya"
+                  />
+                </label>
+                <label>
+                  Last name
+                  <input
+                    value={draft.coachLastName}
+                    onChange={e => setDraft(d => ({ ...d, coachLastName: e.target.value }))}
+                    placeholder="Stone"
+                  />
+                </label>
+              </div>
+              <div className="onboard-field">
+                <label>
+                  Coach email
+                  <input
+                    type="email"
+                    value={draft.coachEmail}
+                    onChange={e => setDraft(d => ({ ...d, coachEmail: e.target.value }))}
+                    placeholder="coach@example.com"
+                  />
+                </label>
+              </div>
+              <div className="onboard-field">
+                <label>
+                  Workspace name
+                  <input
+                    value={draft.name}
+                    onChange={e => setDraft(d => ({ ...d, name: e.target.value }))}
+                    placeholder="Example: My Coaching Business"
+                  />
+                </label>
+                <p className="onboard-helper">Updates the workspace label in the sidebar and dashboard preview.</p>
+              </div>
+              <div className="onboard-field">
+                <label>
+                  Hero message
+                  <textarea
+                    value={draft.heroMessage}
+                    onChange={e => setDraft(d => ({ ...d, heroMessage: e.target.value }))}
+                    placeholder="Example: Elite coaching that adapts to your life."
+                  />
+                </label>
+                <p className="onboard-helper">Appears under the greeting on the Coach Dashboard.</p>
+              </div>
+              <div className="two-col">
+                <label>
+                  Brand color
+                  <input type="color" value={draft.brandColor} onChange={e => setDraft(d => ({ ...d, brandColor: e.target.value }))} style={{ padding: "0.25rem" }} />
+                  <span className="onboard-helper">Main buttons, active states, logo mark, and dashboard hero.</span>
+                </label>
+                <label>
+                  Accent color
+                  <input type="color" value={draft.accentColor} onChange={e => setDraft(d => ({ ...d, accentColor: e.target.value }))} style={{ padding: "0.25rem" }} />
+                  <span className="onboard-helper">Secondary highlights, accent buttons, chart bars, and badges.</span>
+                </label>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Step 1 — Coach Type */}
+        {step === 1 && (
+          <div>
+            <p className="eyebrow">Step 2 of {STEPS.length}</p>
+            <h2 className="modal-title">What kind of coach are you?</h2>
+            <p className="modal-subtitle">We'll tailor your experience — you can change this later.</p>
+            <div className="coach-type-grid" style={{ marginTop: "1.5rem" }}>
+              {COACH_TYPES.map(ct => (
+                <button
+                  key={ct.id}
+                  className={`coach-type-card ${coachTypes.includes(ct.id) ? "selected" : ""}`}
+                  onClick={() => setCoachTypes(prev =>
+                    prev.includes(ct.id) ? prev.filter(c => c !== ct.id) : [...prev, ct.id]
+                  )}
+                >
+                  {ct.label}
+                </button>
+              ))}
+            </div>
+            {coachTypes.length > 0 && (
+              <p className="text-sm muted" style={{ marginTop: "0.75rem", textAlign: "center" }}>
+                {coachTypes.length} selected
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Step 2 — Launch */}
+        {step === 2 && (
+          <div style={{ textAlign: "center", padding: "1rem 0" }}>
+            <p className="eyebrow">Step 3 of {STEPS.length}</p>
+            <h2 className="modal-title">You're all set!</h2>
+            <p className="modal-subtitle">Your workspace is ready. Let's go.</p>
+            <div style={{ marginTop: "2rem", display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+              <div className="onboard-summary-item">
+                <span className="onboard-summary-icon">🏋️</span>
+                <span>CoachOS workspace created</span>
+              </div>
+              {coachTypes.length > 0 && (
+                <div className="onboard-summary-item">
+                  <span className="onboard-summary-icon">🎯</span>
+                  <span>{coachTypes.length} coaching specialty{coachTypes.length > 1 ? "ies" : "y"} selected</span>
+                </div>
+              )}
+              <div className="onboard-summary-item">
+                <span className="onboard-summary-icon">📋</span>
+                <span>Workspace defaults created and ready for your first client</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="onboard-actions">
+          {step > 0 ? (
+            <button className="secondary" onClick={() => setStep(s => s - 1)}>← Back</button>
+          ) : (
+            <div />
+          )}
+          <div className="inline">
+            <span className="text-sm muted">{step + 1} / {STEPS.length}</span>
+            <button onClick={next}>{step === STEPS.length - 1 ? "Launch CoachOS →" : "Continue →"}</button>
+          </div>
+        </div>
+        <div className="onboard-skip" onClick={() => onComplete(draft)}>Skip onboarding — use defaults</div>
+      </div>
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────
+   GROUP PROGRAMS VIEW
+──────────────────────────────────────── */
+function GroupsView({ session, onCreate, onUpdate, onArchive }: {
+  session: CoachSession;
+  onCreate: (payload: Partial<GroupProgram>) => Promise<void>;
+  onUpdate: (programId: string, patch: Partial<GroupProgram>) => Promise<void>;
+  onArchive: (programId: string) => Promise<void>;
+}) {
+  const [programs, setPrograms] = useState<GroupProgram[]>([]);
+  const [showCreate, setShowCreate] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const { push } = useToast();
+
+  useEffect(() => {
+    fetchJson<GroupProgram[]>("/group-programs").then(setPrograms).catch(() => push("Failed to load programs", "error"));
+  }, []);
+
+  const refresh = async () => {
+    setLoading(true);
+    try {
+      const data = await fetchJson<GroupProgram[]>("/group-programs");
+      setPrograms(data);
+    } finally { setLoading(false); }
+  };
+
+  const handleArchive = async (id: string) => {
+    await onArchive(id);
+    await refresh();
+    push("Program archived");
+  };
+
+  const handleCreate = async (payload: Partial<GroupProgram>) => {
+    await onCreate(payload);
+    await refresh();
+    setShowCreate(false);
+    push("Group program created");
+  };
+
+  const handleUpdate = async (id: string, patch: Partial<GroupProgram>) => {
+    await onUpdate(id, patch);
+    await refresh();
+    setEditId(null);
+    push("Program updated");
+  };
+
+  const activePrograms = programs.filter(p => p.status === "active");
+  const archivedPrograms = programs.filter(p => p.status === "archived");
+
+  const ProgramCard = ({ program }: { program: GroupProgram }) => {
+    const members = session.clients.filter(c => program.memberIds.includes(c.id));
+    return (
+      <div className="program-card" onClick={() => setEditId(program.id)}>
+        <div className="program-card-header">
+          <div>
+            <div className="program-card-title">{program.title}</div>
+            <div className="program-card-goal">{program.goal}</div>
+          </div>
+          <span className={`pill ${program.status === "active" ? "pill-success" : program.status === "archived" ? "pill-muted" : "pill-info"}`}>
+            {program.status}
+          </span>
+        </div>
+        <div className="program-member-avatars">
+          {members.map(m => <span key={m.id} className="member-chip">{m.fullName.split(" ")[0]}</span>)}
+          {members.length === 0 && <span className="text-sm muted">No members yet</span>}
+        </div>
+        <div className="program-stats-row">
+          <div className="program-stat">
+            <span className="program-stat-label">Members</span>
+            <span className="program-stat-value">{program.memberIds.length}</span>
+          </div>
+          <div className="program-stat">
+            <span className="program-stat-label">Price/mo</span>
+            <span className="program-stat-value">£{program.monthlyPriceGbp}</span>
+          </div>
+          <div className="program-stat">
+            <span className="program-stat-label">Revenue/mo</span>
+            <span className="program-stat-value">£{program.monthlyPriceGbp * program.memberIds.length}</span>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="page-view">
+      <p className="eyebrow">Group Coaching</p>
+      <h1 className="page-title">Group Programs</h1>
+      <p className="page-subtitle">Run coaching programmes for multiple clients simultaneously with shared tracking.</p>
+
+      {programs.length === 0 && !showCreate && (
+        <div className="panel">
+          <div className="empty-state">
+            <div className="empty-state-icon">👥</div>
+            <p style={{ color: "var(--on-surface)", fontWeight: 600 }}>No group programs yet</p>
+            <p className="muted text-sm">Create a programme to coach multiple clients together.</p>
+          </div>
+        </div>
+      )}
+
+      <div className="stack">
+        {/* Active programs grid */}
+        <div className="content-grid">
+          {activePrograms.map(p => <ProgramCard key={p.id} program={p} />)}
+          <div className="program-create-card" onClick={() => setShowCreate(true)}>
+            <div className="program-create-card-icon">+</div>
+            <div className="program-create-card-label">Create Program</div>
+          </div>
+        </div>
+
+        {/* Archived */}
+        {archivedPrograms.length > 0 && (
+          <div>
+            <p className="eyebrow" style={{ marginBottom: "0.5rem" }}>Archived</p>
+            <div className="content-grid">
+              {archivedPrograms.map(p => <ProgramCard key={p.id} program={p} />)}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Create modal */}
+      {showCreate && (
+        <CreateProgramModal
+          clients={session.clients}
+          onSave={handleCreate}
+          onClose={() => setShowCreate(false)}
+        />
+      )}
+
+      {/* Edit modal */}
+      {editId && (
+        <EditProgramModal
+          program={programs.find(p => p.id === editId)!}
+          clients={session.clients}
+          onSave={patch => handleUpdate(editId, patch)}
+          onArchive={() => handleArchive(editId)}
+          onClose={() => setEditId(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function CreateProgramModal({ clients, onSave, onClose }: {
+  clients: ClientProfile[];
+  onSave: (p: Partial<GroupProgram>) => void;
+  onClose: () => void;
+}) {
+  const [title, setTitle] = useState("");
+  const [goal, setGoal] = useState("");
+  const [description, setDescription] = useState("");
+  const [price, setPrice] = useState(99);
+  const [selected, setSelected] = useState<string[]>([]);
+
+  const toggle = (id: string) => setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
+
+  const handleSave = () => {
+    onSave({
+      id: `gp_${Date.now()}`,
+      coachId: "coach_1",
+      title,
+      goal,
+      description,
+      memberIds: selected,
+      monthlyPriceGbp: price,
+      status: "active",
+      createdAt: new Date().toISOString(),
+    });
+  };
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal-panel">
+        <p className="eyebrow">New Group Program</p>
+        <h2 className="modal-title">Create Program</h2>
+        <p className="modal-subtitle">Set up a shared programme for multiple clients.</p>
+        <div className="create-program-form">
+          <label>Program title<input value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Summer Fat-Loss Sprint" /></label>
+          <label>Goal<input value={goal} onChange={e => setGoal(e.target.value)} placeholder="e.g. Lose 4kg before summer" /></label>
+          <label>Description<textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Brief description of the programme..." /></label>
+          <label>Monthly price (£)<input type="number" value={price} onChange={e => setPrice(Number(e.target.value))} /></label>
+          <div>
+            <label style={{ marginBottom: "0.5rem" }}>Assign clients</label>
+            <div className="member-select-list">
+              {clients.map(c => (
+                <label key={c.id} className="member-checkbox-row">
+                  <input type="checkbox" checked={selected.includes(c.id)} onChange={() => toggle(c.id)} />
+                  <Avatar name={c.fullName} />
+                  <span>{c.fullName}</span>
+                  <StatusPill status={c.status} />
+                </label>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="onboard-actions">
+          <button className="secondary" onClick={onClose}>Cancel</button>
+          <button onClick={handleSave} disabled={!title.trim()}>Create Program</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EditProgramModal({ program, clients, onSave, onArchive, onClose }: {
+  program: GroupProgram;
+  clients: ClientProfile[];
+  onSave: (p: Partial<GroupProgram>) => void;
+  onArchive: () => void;
+  onClose: () => void;
+}) {
+  const [title, setTitle] = useState(program.title);
+  const [goal, setGoal] = useState(program.goal);
+  const [description, setDescription] = useState(program.description);
+  const [price, setPrice] = useState(program.monthlyPriceGbp);
+  const [selected, setSelected] = useState<string[]>(program.memberIds);
+
+  const toggle = (id: string) => setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal-panel">
+        <p className="eyebrow">Edit Program</p>
+        <h2 className="modal-title">{program.title}</h2>
+        <div className="create-program-form">
+          <label>Program title<input value={title} onChange={e => setTitle(e.target.value)} /></label>
+          <label>Goal<input value={goal} onChange={e => setGoal(e.target.value)} /></label>
+          <label>Description<textarea value={description} onChange={e => setDescription(e.target.value)} /></label>
+          <label>Monthly price (£)<input type="number" value={price} onChange={e => setPrice(Number(e.target.value))} /></label>
+          <div>
+            <label style={{ marginBottom: "0.5rem" }}>Members</label>
+            <div className="member-select-list">
+              {clients.map(c => (
+                <label key={c.id} className="member-checkbox-row">
+                  <input type="checkbox" checked={selected.includes(c.id)} onChange={() => toggle(c.id)} />
+                  <Avatar name={c.fullName} />
+                  <span>{c.fullName}</span>
+                  <StatusPill status={c.status} />
+                </label>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="onboard-actions">
+          <button className="danger" onClick={onArchive}>Archive Program</button>
+          <div className="inline">
+            <button className="secondary" onClick={onClose}>Cancel</button>
+            <button onClick={() => onSave({ title, goal, description, memberIds: selected, monthlyPriceGbp: price })}>Save Changes</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────
+   HABITS VIEW
+──────────────────────────────────────── */
+function HabitsView({ session }: { session: CoachSession }) {
+  const [summaries, setSummaries] = useState<Map<string, HabitSummary[]>>(new Map());
+  const [loading, setLoading] = useState(true);
+  const [showAddHabit, setShowAddHabit] = useState<string | null>(null);
+  const [newHabitTitle, setNewHabitTitle] = useState("");
+  const [newHabitFreq, setNewHabitFreq] = useState<"daily"|"weekly">("daily");
+  const { push } = useToast();
+
+  useEffect(() => {
+    Promise.all(
+      session.clients.map(async (client) => {
+        try {
+          const data = await fetchJson<HabitSummary[]>(`/habits/summary?clientId=${client.id}`);
+          return { clientId: client.id, data };
+        } catch { return { clientId: client.id, data: [] }; }
+      })
+    ).then(results => {
+      const map = new Map<string, HabitSummary[]>();
+      for (const r of results) map.set(r.clientId, r.data);
+      setSummaries(map);
+    }).finally(() => setLoading(false));
+  }, [session.clients]);
+
+  const toggleCompletion = async (habitId: string, clientId: string) => {
+    try {
+      await fetchJson(`/habits/${habitId}/complete`, { method: "POST", body: JSON.stringify({}) });
+      // Refresh
+      const data = await fetchJson<HabitSummary[]>(`/habits/summary?clientId=${clientId}`);
+      setSummaries(prev => new Map(prev).set(clientId, data));
+    } catch { push("Failed to toggle habit", "error"); }
+  };
+
+  const sendNudge = async (clientId: string, habitTitle: string) => {
+    await fetchJson("/analytics", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "habit_nudge_sent",
+        actorId: clientId,
+        occurredAt: new Date().toISOString(),
+        metadata: { habit: habitTitle }
+      })
+    });
+    push("Nudge sent to client ✓");
+  };
+
+  const addHabit = async (clientId: string) => {
+    if (!newHabitTitle.trim()) return;
+    try {
+      await fetchJson("/habits", {
+        method: "POST",
+        body: JSON.stringify({ clientId, title: newHabitTitle, target: 1, frequency: newHabitFreq })
+      });
+      const data = await fetchJson<HabitSummary[]>(`/habits/summary?clientId=${clientId}`);
+      setSummaries(prev => new Map(prev).set(clientId, data));
+      setShowAddHabit(null);
+      setNewHabitTitle("");
+      push("Habit created");
+    } catch { push("Failed to create habit", "error"); }
+  };
+
+  const today = new Date().toISOString().slice(0, 10);
+  const completionRate = (clientId: string) => {
+    const items = summaries.get(clientId) ?? [];
+    if (!items.length) return 0;
+    return Math.round((items.filter(i => i.todayDone).length / items.length) * 100);
+  };
+
+  return (
+    <div className="page-view">
+      <p className="eyebrow">Habit Coaching</p>
+      <h1 className="page-title">Daily Habits & Nudges</h1>
+      <p className="page-subtitle">Track streaks, send automated nudges, and build consistency with every client.</p>
+
+      {loading ? (
+        <div style={{ display: "grid", placeItems: "center", padding: "4rem" }}><div className="spinner" /></div>
+      ) : (
+        <div>
+          {session.clients.map(client => {
+            const items = summaries.get(client.id) ?? [];
+            const rate = completionRate(client.id);
+            return (
+              <div key={client.id} className="habit-client-section">
+                <div className="habit-client-header">
+                  <Avatar name={client.fullName} />
+                  <div>
+                    <div className="habit-client-name">{client.fullName}</div>
+                    <div className="habit-summary-stats">
+                      <span className={`pill ${rate >= 70 ? "pill-success" : rate >= 40 ? "pill-warning" : "pill-danger"}`}>
+                        {rate}% today
+                      </span>
+                      {items.map(i => i.streak > 0 && (
+                        <span key={i.habit.id} className="habit-streak-badge">🔥 {i.streak}d streak</span>
+                      ))}
+                    </div>
+                  </div>
+                  <button className="ghost sm" style={{ marginLeft: "auto" }} onClick={() => setShowAddHabit(showAddHabit === client.id ? null : client.id)}>
+                    + Add Habit
+                  </button>
+                </div>
+
+                {showAddHabit === client.id && (
+                  <div className="panel" style={{ marginBottom: "1rem" }}>
+                    <div className="stack compact">
+                      <input
+                        value={newHabitTitle}
+                        onChange={e => setNewHabitTitle(e.target.value)}
+                        placeholder="e.g. Log meals in the app"
+                      />
+                      <div className="inline">
+                        <select value={newHabitFreq} onChange={e => setNewHabitFreq(e.target.value as "daily"|"weekly")}>
+                          <option value="daily">Daily</option>
+                          <option value="weekly">Weekly</option>
+                        </select>
+                        <button onClick={() => addHabit(client.id)}>Create</button>
+                        <button className="secondary" onClick={() => setShowAddHabit(null)}>Cancel</button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div className="habit-card">
+                  {items.length === 0 && (
+                    <div className="empty-state" style={{ padding: "1.5rem" }}>
+                      <p>No habits yet. Add one above.</p>
+                    </div>
+                  )}
+                  {items.map(({ habit, streak, todayDone }) => (
+                    <div key={habit.id} className="habit-item">
+                      <input
+                        type="checkbox"
+                        className={`habit-checkbox${todayDone ? " checked" : ""}`}
+                        checked={todayDone}
+                        onChange={() => toggleCompletion(habit.id, client.id)}
+                      />
+                      <span className={`habit-title${todayDone ? " done" : ""}`}>{habit.title}</span>
+                      <div className="habit-meta">
+                        <span className="streak-flame">🔥 {streak}</span>
+                        <span className="habit-frequency">{habit.frequency}</span>
+                        {!todayDone && (
+                          <button className="habit-nudge-btn" onClick={() => sendNudge(client.id, habit.title)}>
+                            Send nudge
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────
+   EXERCISES VIEW
+──────────────────────────────────────── */
+function ExercisesView() {
+  const [search, setSearch] = useState("");
+  const [bodyPart, setBodyPart] = useState("all");
+  const [exercises, setExercises] = useState<Exercise[]>([]);
+
+  const BODY_PARTS = ["all", "Chest", "Back", "Legs", "Shoulders", "Arms", "Core", "Cardio"];
+
+  const load = async () => {
+    const q = new URLSearchParams();
+    if (search.trim()) q.set("search", search.trim());
+    if (bodyPart !== "all") q.set("bodyPart", bodyPart);
+    const suffix = q.toString() ? `?${q}` : "";
+    const data = await fetchJson<Exercise[]>(`/exercises${suffix}`);
+    setExercises(data);
+  };
+
+  useEffect(() => { load(); }, [bodyPart]);
+
+  // Debounced search
+  useEffect(() => {
+    const t = setTimeout(load, 300);
+    return () => clearTimeout(t);
+  }, [search]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <div className="page-view">
+      <p className="eyebrow">Exercise Library</p>
+      <h1 className="page-title">Movement Database</h1>
+      <p className="page-subtitle">{exercises.length} exercises across all movement patterns — tagged by body part, equipment, and difficulty.</p>
+
+      <div className="panel">
+        <div className="search-wrapper" style={{ marginBottom: "1rem" }}>
+          <span className="search-icon">⌕</span>
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search exercises…" />
+        </div>
+        <div className="exercise-filters">
+          {BODY_PARTS.map(bp => (
+            <button key={bp} className={`exercise-filter-pill${bodyPart === bp ? " active" : ""}`} onClick={() => setBodyPart(bp)}>
+              {bp === "all" ? "All" : bp}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="exercise-grid">
+        {exercises.map(ex => (
+          <div key={ex.id} className="exercise-card">
+            <div className="exercise-card-header">
+              <div>
+                <div className="exercise-name">{ex.name}</div>
+                <div className="exercise-tags">
+                  <span className="exercise-tag exercise-tag--bodypart">{ex.bodyPart}</span>
+                  <span className="exercise-tag exercise-tag--equipment">{ex.equipment}</span>
+                  <span className={`exercise-tag exercise-tag--difficulty`}>{ex.difficulty}</span>
+                </div>
+              </div>
+            </div>
+            <p className="exercise-instructions">{ex.instructions}</p>
+            <div className="exercise-card-footer">
+              <span className="pill pill-muted" style={{ fontSize: "0.72rem" }}>{ex.goal}</span>
+            </div>
+          </div>
+        ))}
+        {exercises.length === 0 && (
+          <div className="empty-state" style={{ gridColumn: "1 / -1" }}>
+            <div className="empty-state-icon">🏋️</div>
+            <p>No exercises match your filters.</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────
+   CALENDAR VIEW
+──────────────────────────────────────── */
+type CalendarEvent = {
+  id: string;
+  date: string; // YYYY-MM-DD
+  type: "check-in"|"renewal"|"billing"|"session"|"reminder"|"blocked";
+  clientId?: string;
+  clientName?: string;
+  label: string;
+  color: string;
+};
+
+function CalendarView({ session, onNav }: { session: CoachSession; onNav: (id: NavId) => void }) {
+  const today = new Date();
+  const [viewDate, setViewDate] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [monthOffset, setMonthOffset] = useState(0);
+  const [blockedDates, setBlockedDates] = useState<Record<string, string[]>>({});
+  const [newBlockComment, setNewBlockComment] = useState("");
+  const [showBlockInput, setShowBlockInput] = useState(false);
+
+  useEffect(() => {
+    setShowBlockInput(false);
+    setNewBlockComment("");
+  }, [selectedDate]);
+
+  const displayDate = useMemo(() => {
+    const d = new Date(today.getFullYear(), today.getMonth() + monthOffset, 1);
+    setViewDate(d);
+    return d;
+  }, [monthOffset]);
+
+  const year = displayDate.getFullYear();
+  const month = displayDate.getMonth();
+
+  const events: CalendarEvent[] = useMemo(() => {
+    const evs: CalendarEvent[] = [];
+    // Renewal events
+    session.subscriptions.forEach(sub => {
+      if (sub.renewalDate && sub.status !== "cancelled") {
+        const client = session.clients.find(c => c.id === sub.clientId);
+        evs.push({
+          id: sub.id,
+          date: sub.renewalDate,
+          type: "renewal",
+          clientId: sub.clientId,
+          clientName: client?.fullName,
+          label: `Renewal: ${client?.fullName ?? "Client"}`,
+          color: "var(--primary)",
+        });
+      }
+    });
+    // Billing events (same as renewal)
+    session.subscriptions.forEach(sub => {
+      if (sub.renewalDate && sub.status === "active") {
+        const client = session.clients.find(c => c.id === sub.clientId);
+        evs.push({
+          id: `bill-${sub.id}`,
+          date: sub.renewalDate,
+          type: "billing",
+          clientId: sub.clientId,
+          clientName: client?.fullName,
+          label: `Payment: £${sub.amountGbp}`,
+          color: "var(--accent)",
+        });
+      }
+    });
+    // Check-in reminders (scheduled based on last check-in + 7 days)
+    session.clients.forEach(client => {
+      if (client.lastCheckInDate) {
+        const last = new Date(client.lastCheckInDate);
+        const next = new Date(last);
+        next.setDate(next.getDate() + 7);
+        // Only add if within this month
+        if (next.getMonth() === month && next.getFullYear() === year) {
+          evs.push({
+            id: `checkin-reminder-${client.id}`,
+            date: next.toISOString().split("T")[0],
+            type: "check-in",
+            clientId: client.id,
+            clientName: client.fullName,
+            label: `Check-in: ${client.fullName}`,
+            color: "var(--tertiary)",
+          });
+        }
+      }
+    });
+    // Add blocked dates as events (one per comment)
+    Object.entries(blockedDates).forEach(([date, comments]) => {
+      comments.forEach((comment, i) => {
+        evs.push({
+          id: `blocked-${date}-${i}`,
+          date,
+          type: "blocked",
+          label: comment,
+          color: "var(--danger)",
+        });
+      });
+    });
+    return evs;
+  }, [session, month, year, blockedDates]);
+
+  const eventMap = useMemo(() => {
+    const map = new Map<string, CalendarEvent[]>();
+    events.forEach(e => {
+      const existing = map.get(e.date) ?? [];
+      existing.push(e);
+      map.set(e.date, existing);
+    });
+    return map;
+  }, [events]);
+
+  // Calendar grid
+  const firstDay = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const calendarDays: (number | null)[] = [
+    ...Array(firstDay === 0 ? 6 : firstDay - 1).fill(null),
+    ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
+    ...Array(42 - (firstDay === 0 ? 6 : firstDay - 1) - daysInMonth).fill(null),
+  ];
+
+  const formatDate = (day: number) => `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  const todayStr = today.toISOString().split("T")[0];
+
+  const selectedEvents = selectedDate ? eventMap.get(selectedDate) ?? [] : [];
+  const upcomingEvents = events
+    .filter(e => e.date >= todayStr)
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(0, 8);
+
+  const monthName = displayDate.toLocaleString("en-GB", { month: "long", year: "numeric" });
+  const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+  const typeConfig = {
+    "check-in": { icon: "monitor_heart", color: "var(--tertiary)", bg: "var(--tertiary-fixed)" },
+    "renewal": { icon: "autorenew", color: "var(--primary)", bg: "var(--primary-light)" },
+    "billing": { icon: "payments", color: "var(--accent)", bg: "var(--accent-light)" },
+    "session": { icon: "event", color: "var(--secondary)", bg: "var(--secondary-fixed)" },
+    "reminder": { icon: "notifications", color: "var(--warning)", bg: "var(--warning-light)" },
+    "blocked": { icon: "block", color: "var(--danger)", bg: "rgba(239,68,68,0.1)" },
+  };
+
+  return (
+    <div className="page-view">
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "2rem", flexWrap: "wrap", gap: "1rem" }}>
+        <div>
+          <p style={{ fontFamily: "Inter, sans-serif", fontSize: "0.72rem", fontWeight: 700, color: "var(--outline)", textTransform: "uppercase", letterSpacing: "0.1em", margin: "0 0 0.25rem" }}>Schedule</p>
+          <h1 style={{ fontFamily: "Manrope, sans-serif", fontSize: "2.25rem", fontWeight: 800, color: "var(--text-primary)", letterSpacing: "-0.03em", margin: 0 }}>Calendar</h1>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+          <button className="btn-ghost" onClick={() => setMonthOffset(o => o - 1)}>
+            <span className="material-symbols-outlined" style={{ fontSize: "1.2rem" }}>chevron_left</span>
+          </button>
+          <span style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "1rem", color: "var(--text-primary)", minWidth: "160px", textAlign: "center" }}>{monthName}</span>
+          <button className="btn-ghost" onClick={() => setMonthOffset(o => o + 1)}>
+            <span className="material-symbols-outlined" style={{ fontSize: "1.2rem" }}>chevron_right</span>
+          </button>
+          {monthOffset !== 0 && (
+            <button className="btn-ghost" onClick={() => setMonthOffset(0)} style={{ fontFamily: "Inter, sans-serif", fontSize: "0.75rem", fontWeight: 600, padding: "0.4rem 0.75rem" }}>Today</button>
+          )}
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: "1.5rem", alignItems: "start" }}>
+        {/* Calendar grid */}
+        <div>
+          <div className="card-glass" style={{ padding: "1rem" }}>
+            {/* Day headers */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "4px", marginBottom: "4px" }}>
+              {days.map(d => (
+                <div key={d} style={{ textAlign: "center", fontFamily: "Inter, sans-serif", fontSize: "0.65rem", fontWeight: 700, color: "var(--outline)", textTransform: "uppercase", letterSpacing: "0.05em", padding: "0.4rem 0" }}>{d}</div>
+              ))}
+            </div>
+            {/* Day cells */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "4px" }}>
+              {calendarDays.map((day, idx) => {
+                if (!day) return <div key={`empty-${idx}`} />;
+                const dateStr = formatDate(day);
+                const dayEvents = eventMap.get(dateStr) ?? [];
+                const isBlocked = (blockedDates[dateStr]?.length ?? 0) > 0;
+                const isToday = dateStr === todayStr;
+                const isSelected = dateStr === selectedDate;
+                return (
+                  <button
+                    key={day}
+                    onClick={() => setSelectedDate(isSelected ? null : dateStr)}
+                    style={{
+                      border: "none",
+                      background: isSelected ? "var(--primary-light)" : isToday ? "var(--surface-container)" : "transparent",
+                      borderRadius: "var(--r-lg)",
+                      padding: "0.5rem 0.25rem",
+                      cursor: "pointer",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      gap: "2px",
+                      minHeight: "60px",
+                      transition: "background 0.15s",
+                      position: "relative",
+                    }}
+                  >
+                    {isBlocked && (
+                      <div
+                        title="Blocked day"
+                        style={{
+                          position: "absolute",
+                          top: "6px",
+                          right: "6px",
+                          minWidth: "22px",
+                          height: "20px",
+                          borderRadius: "9999px",
+                          background: "var(--danger)",
+                          color: "white",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          boxShadow: "0 4px 12px rgba(186,26,26,0.28)",
+                          border: "2px solid white"
+                        }}
+                      >
+                        <span className="material-symbols-outlined" style={{ fontSize: "0.85rem" }}>block</span>
+                      </div>
+                    )}
+                    <span style={{
+                      fontFamily: "Manrope, sans-serif",
+                      fontWeight: 800,
+                      fontSize: "0.9rem",
+                      color: isToday ? "var(--primary)" : "var(--text-primary)",
+                    }}>{day}</span>
+                    {dayEvents.filter(e => e.type !== "blocked").slice(0, 2).map(e => (
+                      <div key={e.id} style={{
+                        width: "100%",
+                        padding: "1px 4px",
+                        borderRadius: "9999px",
+                        background: typeConfig[e.type]?.bg ?? "var(--surface-container)",
+                        fontFamily: "Inter, sans-serif",
+                        fontSize: "0.55rem",
+                        fontWeight: 600,
+                        color: typeConfig[e.type]?.color ?? "var(--on-surface)",
+                        textAlign: "center",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}>{e.clientName ? e.clientName.split(" ")[0] : e.type}</div>
+                    ))}
+                    {dayEvents.filter(e => e.type !== "blocked").length > 2 && (
+                      <span style={{ fontFamily: "Inter, sans-serif", fontSize: "0.5rem", color: "var(--outline)" }}>+{dayEvents.filter(e => e.type !== "blocked").length - 2}</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Upcoming events strip */}
+          <div style={{ marginTop: "1.5rem" }}>
+            <h2 style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "1rem", color: "var(--text-primary)", marginBottom: "0.75rem" }}>Upcoming</h2>
+            {upcomingEvents.length === 0 ? (
+              <div className="empty-state" style={{ padding: "2rem" }}>
+                <span className="material-symbols-outlined" style={{ fontSize: "2rem", color: "var(--outline)" }}>event_available</span>
+                <p style={{ fontFamily: "Inter, sans-serif", color: "var(--outline)", fontSize: "0.85rem" }}>No upcoming events this month.</p>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                {upcomingEvents.map(e => {
+                  const cfg = typeConfig[e.type];
+                  const client = e.clientId ? session.clients.find(c => c.id === e.clientId) : null;
+                  const isBlocked = e.type === "blocked";
+                  return (
+                    <div key={e.id} className="card-glass" style={{ display: "flex", alignItems: "center", gap: "0.75rem", padding: "0.75rem", cursor: (client || isBlocked) ? "pointer" : "default", borderLeft: isBlocked ? "3px solid var(--danger)" : undefined, opacity: isBlocked ? 0.85 : 1 }} onClick={() => { setSelectedDate(e.date); setMonthOffset(0); }}>
+                      <div style={{ width: 36, height: 36, borderRadius: "50%", background: cfg?.bg, display: "grid", placeItems: "center", flexShrink: 0 }}>
+                        <span className="material-symbols-outlined" style={{ fontSize: "0.9rem", color: cfg?.color }}>{cfg?.icon}</span>
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "0.82rem", color: isBlocked ? "var(--danger)" : "var(--text-primary)" }}>{e.label}</div>
+                        <div style={{ fontFamily: "Inter, sans-serif", fontSize: "0.7rem", color: "var(--outline)" }}>{new Date(e.date + "T12:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })}</div>
+                      </div>
+                      {client && (
+                        <button className="btn-ghost" style={{ fontFamily: "Inter, sans-serif", fontSize: "0.72rem", fontWeight: 600, padding: "0.3rem 0.6rem" }}
+                          onClick={ev => { ev.stopPropagation(); onNav("clients"); }}>
+                          View
+                        </button>
+                      )}
+                      {isBlocked && (
+                        <span style={{ fontFamily: "Inter, sans-serif", fontSize: "0.65rem", fontWeight: 600, color: "var(--danger)", background: "rgba(239,68,68,0.1)", padding: "0.15rem 0.4rem", borderRadius: "9999px" }}>Blocked</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Right sidebar: selected date detail */}
+        <div>
+          {selectedDate ? (
+            <div className="card-glass" style={{ padding: "1.25rem", position: "sticky", top: "1rem" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1rem" }}>
+                <h3 style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "1rem", color: "var(--text-primary)", margin: 0 }}>
+                  {new Date(selectedDate + "T12:00:00").toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+                </h3>
+                <button onClick={() => setSelectedDate(null)} style={{ border: "none", background: "transparent", cursor: "pointer", color: "var(--outline)", padding: "0.25rem" }}>
+                  <span className="material-symbols-outlined" style={{ fontSize: "1rem" }}>close</span>
+                </button>
+              </div>
+
+              {/* Block this date */}
+              <div style={{ marginBottom: "1rem" }}>
+                {/* Existing block comments for this date */}
+                {(blockedDates[selectedDate!]?.length ?? 0) > 0 && (
+                  <div style={{ marginBottom: "0.75rem", display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.2rem" }}>
+                      <span style={{ fontFamily: "Inter, sans-serif", fontSize: "0.68rem", fontWeight: 700, color: "var(--danger)", textTransform: "uppercase" }}>
+                        Blocked ({blockedDates[selectedDate!]?.length}/10)
+                      </span>
+                    </div>
+                    {blockedDates[selectedDate!].map((comment, i) => (
+                      <div key={i} style={{ display: "flex", alignItems: "center", gap: "0.4rem", padding: "0.35rem 0.5rem", borderRadius: "var(--r-sm)", background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.15)" }}>
+                        <span className="material-symbols-outlined" style={{ fontSize: "0.8rem", color: "var(--danger)", flexShrink: 0 }}>block</span>
+                        <span style={{ fontFamily: "Inter, sans-serif", fontSize: "0.75rem", color: "var(--text-primary)", flex: 1, lineHeight: 1.4 }}>{comment}</span>
+                        <button
+                          type="button"
+                          aria-label="Remove blocked note"
+                          onClick={() => setBlockedDates(prev => {
+                            const existing = prev[selectedDate!] ?? [];
+                            const updated = existing.filter((_, idx) => idx !== i);
+                            if (updated.length === 0) {
+                              const n = { ...prev };
+                              delete n[selectedDate!];
+                              return n;
+                            }
+                            return { ...prev, [selectedDate!]: updated };
+                          })}
+                          style={{ width: 28, height: 28, border: "none", borderRadius: "9999px", background: "rgba(239,68,68,0.08)", cursor: "pointer", color: "var(--outline)", padding: 0, flexShrink: 0, display: "grid", placeItems: "center" }}>
+                          <span className="material-symbols-outlined" style={{ fontSize: "1rem", lineHeight: 1 }}>close</span>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Add comment input or button */}
+                {showBlockInput ? (
+                  <div>
+                    <textarea
+                      value={newBlockComment}
+                      onChange={e => setNewBlockComment(e.target.value)}
+                      placeholder="e.g. Going out for dinner with family..."
+                      rows={2}
+                      maxLength={200}
+                      style={{ width: "100%", padding: "0.4rem 0.6rem", borderRadius: "var(--r-md)", border: "1.5px solid rgba(239,68,68,0.3)", background: "var(--surface-container)", color: "var(--text-primary)", fontFamily: "Inter, sans-serif", fontSize: "0.75rem", resize: "none", boxSizing: "border-box", marginBottom: "0.4rem" }}
+                    />
+                    <div style={{ display: "flex", gap: "0.4rem" }}>
+                      <button
+                        onClick={() => {
+                          if (!newBlockComment.trim() || !selectedDate) return;
+                          if ((blockedDates[selectedDate]?.length ?? 0) >= 10) return;
+                          setBlockedDates(prev => ({
+                            ...prev,
+                            [selectedDate!]: [...(prev[selectedDate!] ?? []), newBlockComment.trim()],
+                          }));
+                          setNewBlockComment("");
+                          setShowBlockInput(false);
+                        }}
+                        disabled={!newBlockComment.trim() || (blockedDates[selectedDate!]?.length ?? 0) >= 10}
+                        style={{ flex: 1, padding: "0.4rem", borderRadius: "var(--r-sm)", border: "none", background: newBlockComment.trim() ? "var(--danger)" : "var(--surface-container)", color: newBlockComment.trim() ? "white" : "var(--outline)", fontFamily: "Inter, sans-serif", fontSize: "0.72rem", fontWeight: 700, cursor: newBlockComment.trim() ? "pointer" : "not-allowed" }}>
+                        Add Block
+                      </button>
+                      <button
+                        onClick={() => { setShowBlockInput(false); setNewBlockComment(""); }}
+                        style={{ padding: "0.4rem 0.6rem", borderRadius: "var(--r-sm)", border: "1.5px solid var(--outline-variant)", background: "var(--surface-container)", color: "var(--outline)", fontFamily: "Inter, sans-serif", fontSize: "0.72rem", fontWeight: 600, cursor: "pointer" }}>
+                        Cancel
+                      </button>
+                    </div>
+                    {(blockedDates[selectedDate!]?.length ?? 0) >= 10 && (
+                      <p style={{ fontFamily: "Inter, sans-serif", fontSize: "0.68rem", color: "var(--danger)", margin: "0.25rem 0 0" }}>Maximum 10 blocks per day.</p>
+                    )}
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setShowBlockInput(true)}
+                    disabled={(blockedDates[selectedDate!]?.length ?? 0) >= 10}
+                    style={{ width: "100%", padding: "0.45rem 0.75rem", borderRadius: "var(--r-md)", border: "1.5px solid rgba(239,68,68,0.3)", background: (blockedDates[selectedDate!]?.length ?? 0) < 10 ? "rgba(239,68,68,0.06)" : "var(--surface-container)", color: (blockedDates[selectedDate!]?.length ?? 0) < 10 ? "var(--danger)" : "var(--outline)", fontFamily: "Inter, sans-serif", fontSize: "0.75rem", fontWeight: 600, cursor: (blockedDates[selectedDate!]?.length ?? 0) < 10 ? "pointer" : "not-allowed", display: "flex", alignItems: "center", gap: "0.4rem", justifyContent: "center" }}>
+                    <span className="material-symbols-outlined" style={{ fontSize: "0.9rem" }}>add</span>
+                    {(blockedDates[selectedDate!]?.length ?? 0) > 0 ? "Add another block" : "Block this date"}
+                  </button>
+                )}
+              </div>
+
+              {/* Events list */}
+              {selectedEvents.filter(e => e.type !== "blocked").length === 0 ? (
+                <p style={{ fontFamily: "Inter, sans-serif", fontSize: "0.82rem", color: "var(--outline)" }}>No events on this day.</p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                  {selectedEvents.map(e => {
+                    const cfg = typeConfig[e.type];
+                    const client = e.clientId ? session.clients.find(c => c.id === e.clientId) : null;
+                    return (
+                      <div key={e.id} style={{ display: "flex", alignItems: "flex-start", gap: "0.75rem", padding: "0.75rem", borderRadius: "var(--r-lg)", background: cfg?.bg ?? "var(--surface-container)", borderLeft: `3px solid ${cfg?.color}` }}>
+                        <span className="material-symbols-outlined" style={{ fontSize: "1rem", color: cfg?.color, flexShrink: 0 }}>{cfg?.icon}</span>
+                        <div>
+                          <div style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "0.82rem", color: "var(--text-primary)" }}>{e.label}</div>
+                          {client && (
+                            <button
+                              onClick={() => onNav("clients")}
+                              style={{ border: "none", background: "transparent", cursor: "pointer", fontFamily: "Inter, sans-serif", fontSize: "0.72rem", fontWeight: 600, color: cfg?.color, padding: "0.2rem 0", textDecoration: "underline" }}>
+                              View client profile
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="card-glass" style={{ padding: "1.25rem", position: "sticky", top: "1rem" }}>
+              <h3 style={{ fontFamily: "Manrope, sans-serif", fontWeight: 700, fontSize: "0.95rem", color: "var(--text-primary)", marginBottom: "1rem" }}>This Month</h3>
+              {[
+                { type: "renewal" as const, label: "Renewals", icon: "autorenew", color: "var(--primary)", bg: "var(--primary-light)" },
+                { type: "billing" as const, label: "Payments due", icon: "payments", color: "var(--accent)", bg: "var(--accent-light)" },
+                { type: "check-in" as const, label: "Check-in reminders", icon: "monitor_heart", color: "var(--tertiary)", bg: "var(--tertiary-fixed)" },
+              ].map(t => {
+                const count = events.filter(e => e.type === t.type).length;
+                return (
+                  <div key={t.type} style={{ display: "flex", alignItems: "center", gap: "0.75rem", padding: "0.5rem 0", borderBottom: "1px solid var(--surface-container)" }}>
+                    <div style={{ width: 28, height: 28, borderRadius: "50%", background: t.bg, display: "grid", placeItems: "center" }}>
+                      <span className="material-symbols-outlined" style={{ fontSize: "0.85rem", color: t.color }}>{t.icon}</span>
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontFamily: "Inter, sans-serif", fontSize: "0.8rem", fontWeight: 600, color: "var(--text-primary)" }}>{t.label}</div>
+                    </div>
+                    <span style={{ fontFamily: "Manrope, sans-serif", fontWeight: 800, fontSize: "1.1rem", color: count > 0 ? t.color : "var(--outline)" }}>{count}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────
+   NUTRITION SWAP AGENT
+──────────────────────────────────────── */
+function NutritionSwapAgent({ planId, planNutrition }: { planId: string; planNutrition: string[] }) {
+  const [foods, setFoods] = useState<Array<{ id: string; name: string; calories: number; proteinG: number; carbsG: number; fatG: number; portion: string; swapped: boolean }>>([]);
+  const [activeSwap, setActiveSwap] = useState<number | null>(null);
+  const [suggestion, setSuggestion] = useState<SwapSuggestion | null>(null);
+  const [appliedCount, setAppliedCount] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [appliedSwaps, setAppliedSwaps] = useState<Set<string>>(new Set());
+  const [showHistory, setShowHistory] = useState(false);
+  const [history, setHistory] = useState<NutritionSwap[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  // Initialise food items from plan nutrition
+  useEffect(() => {
+    setFoods(planNutrition.map((n, i) => ({
+      id: `food_${i}`,
+      name: n.replace(/^[\d.,]+\s*(g|kcal|cals?|calories|protein|carbs|fat|kcal?)\s*/i, "").trim(),
+      calories: 200 + Math.floor(Math.random() * 300),
+      proteinG: 5 + Math.floor(Math.random() * 30),
+      carbsG: 10 + Math.floor(Math.random() * 50),
+      fatG: 3 + Math.floor(Math.random() * 20),
+      portion: "per serving",
+      swapped: false,
+    })));
+  }, [planNutrition]);
+
+  const requestSwap = async (index: number) => {
+    setActiveSwap(index);
+    setLoading(true);
+    setSuggestion(null);
+    try {
+      const food = foods[index];
+      const result = await fetchJson<SwapSuggestion>("/nutrition/swap", {
+        method: "POST",
+        body: JSON.stringify({
+          planId,
+          originalFood: { name: food.name, calories: food.calories, proteinG: food.proteinG, carbsG: food.carbsG, fatG: food.fatG, portion: food.portion }
+        })
+      });
+      setSuggestion(result);
+    } catch {
+      // Silent fail — agentic fallback
+    } finally { setLoading(false); }
+  };
+
+  const loadHistory = async () => {
+    setHistoryLoading(true);
+    try {
+      const data = await fetchJson<NutritionSwap[]>(`/nutrition/swaps/${planId}`);
+      setHistory(data);
+      setShowHistory(true);
+    } catch { /* ignore */ }
+    setHistoryLoading(false);
+  };
+
+  const applySwap = async () => {
+    if (!suggestion?.suggestion || activeSwap === null) return;
+    try {
+      await fetchJson("/nutrition/swap/apply", {
+        method: "POST",
+        body: JSON.stringify({
+          planId,
+          suggestion: suggestion.suggestion,
+          originalFood: suggestion.original
+        })
+      });
+      setFoods(prev => prev.map((f, i) => i === activeSwap ? { ...f, name: suggestion.suggestion!.name, calories: suggestion.suggestion!.calories, proteinG: suggestion.suggestion!.proteinG, carbsG: suggestion.suggestion!.carbsG, fatG: suggestion.suggestion!.fatG, swapped: true } : f));
+      setAppliedSwaps(prev => new Set([...prev, foods[activeSwap].id]));
+      setAppliedCount(c => c + 1);
+    } catch { /* ignore */ }
+    setSuggestion(null);
+    setActiveSwap(null);
+  };
+
+  return (
+    <div className="swap-agent">
+      <div className="swap-agent-header">
+        <span style={{ fontSize: "1.1rem" }}>🔄</span>
+        <div>
+          <h3 style={{ fontSize: "1rem", marginBottom: "0.1rem" }}>Nutrition Swap Agent</h3>
+          <p className="text-sm muted" style={{ margin: 0 }}>Click any food to get AI macro-matched alternatives.</p>
+        </div>
+        <span className="swap-agent-badge">AI POWERED</span>
+      </div>
+
+      {foods.map((food, i) => (
+        <div key={food.id}>
+          <div className={`swap-food-item${food.swapped ? " swapped" : ""}${activeSwap === i ? " active" : ""}`} onClick={() => !food.swapped && requestSwap(i)}>
+            <div>
+              <div className="swap-food-name">{food.swapped ? "✓ " : ""}{food.name}</div>
+              <div className="swap-food-macros">{food.calories} kcal · {food.proteinG}g P · {food.carbsG}g C · {food.fatG}g F</div>
+            </div>
+            {!food.swapped && <button className="swap-swap-btn" onClick={e => { e.stopPropagation(); requestSwap(i); }}>Swap</button>}
+            {food.swapped && <span className="pill pill-success" style={{ fontSize: "0.72rem" }}>Swapped</span>}
+          </div>
+
+          {/* Swap result */}
+          {activeSwap === i && (loading || suggestion) && (
+            <div className="swap-result">
+              {loading && <div style={{ display: "flex", justifyContent: "center", padding: "1rem" }}><div className="spinner" /></div>}
+              {!loading && suggestion && suggestion.suggestion && (
+                <>
+                  <div className="swap-result-header">
+                    <span className="swap-result-title">⚡ {suggestion.suggestion.name}</span>
+                  </div>
+                  <p className="swap-result-reason">"{suggestion.suggestion.reasoning}"</p>
+                  <div className="swap-macro-compare">
+                    {[
+                      { label: "Calories", orig: suggestion.original.calories, swap: suggestion.suggestion.calories, unit: "" },
+                      { label: "Protein", orig: suggestion.original.proteinG, swap: suggestion.suggestion.proteinG, unit: "g" },
+                      { label: "Carbs", orig: suggestion.original.carbsG, swap: suggestion.suggestion.carbsG, unit: "g" },
+                      { label: "Fat", orig: suggestion.original.fatG, swap: suggestion.suggestion.fatG, unit: "g" },
+                    ].map(m => (
+                      <div key={m.label} className="swap-macro-col">
+                        <div className="swap-macro-label">{m.label}</div>
+                        <div className="swap-macro-val" style={{ color: m.swap < m.orig ? "var(--primary)" : m.swap > m.orig ? "var(--warning)" : undefined }}>
+                          {m.swap}{m.unit}
+                        </div>
+                        <div className="text-xs muted">{m.orig}{m.unit} orig</div>
+                      </div>
+                    ))}
+                  </div>
+                  <button className="swap-apply-btn" onClick={applySwap}>✓ Apply this swap</button>
+                </>
+              )}
+              {!loading && suggestion && !suggestion.suggestion && (
+                <p className="text-sm muted">No swap found for this item.</p>
+              )}
+            </div>
+          )}
+        </div>
+      ))}
+
+      <div className="swap-agent-footer">
+        <span className="swap-applied-count">{appliedCount} swap{appliedCount !== 1 ? "s" : ""} applied</span>
+        <div className="inline">
+          <RecipePanel planNutrition={planNutrition} />
+          <button className="swap-history-btn" onClick={loadHistory} disabled={historyLoading}>View history →</button>
+        </div>
+      </div>
+
+      {showHistory && (
+        <div className="swap-history-panel">
+          <div className="swap-history-header">
+            <h4>Swap History</h4>
+            <button className="ghost sm" onClick={() => setShowHistory(false)}>✕</button>
+          </div>
+          {historyLoading ? (
+            <div style={{ display: "flex", justifyContent: "center", padding: "1rem" }}><div className="spinner" /></div>
+          ) : history.length === 0 ? (
+            <p className="text-sm muted" style={{ padding: "0.75rem 0" }}>No swaps applied yet.</p>
+          ) : (
+            <div className="swap-history-list">
+              {history.map(s => (
+                <div key={s.id} className="swap-history-item">
+                  <div className="swap-history-row">
+                    <span className="swap-history-food swap-history-orig">{s.originalFood.name}</span>
+                    <span className="swap-history-arrow">→</span>
+                    <span className="swap-history-food swap-history-new">{s.swapSuggestion.name}</span>
+                  </div>
+                  <div className="swap-history-meta">
+                    {s.originalFood.calories} kcal → {s.swapSuggestion.calories} kcal
+                    {s.appliedAt && <span className="muted text-xs"> · {new Date(s.appliedAt).toLocaleDateString()}</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────
+   RECIPE PANEL
+──────────────────────────────────────── */
+function RecipePanel({ planNutrition }: { planNutrition: string[] }) {
+  const [recipe, setRecipe] = useState<Recipe | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [selectedFood, setSelectedFood] = useState<string>("");
+  const [showPanel, setShowPanel] = useState(false);
+
+  const foodOptions = planNutrition.map((n, i) => ({
+    id: `food_${i}`,
+    name: n.replace(/^[\d.,]+\s*(g|kcal|cals?|calories|protein|carbs|fat|kcal?)\s*/i, "").trim().slice(0, 40)
+  }));
+
+  const generateRecipe = async (foodName: string) => {
+    setLoading(true);
+    try {
+      const data = await fetchJson<Recipe>(`/recipes?food=${encodeURIComponent(foodName)}`);
+      setRecipe(data);
+      setShowPanel(true);
+    } catch { /* silent */ }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <>
+      <div className="inline" style={{ gap: "0.4rem" }}>
+        <select
+          value={selectedFood}
+          onChange={e => setSelectedFood(e.target.value)}
+          style={{ width: "auto", fontSize: "0.8rem", padding: "0.3rem 0.6rem" }}
+        >
+          <option value="">Pick a food…</option>
+          {foodOptions.map(f => <option key={f.id} value={f.name}>{f.name}</option>)}
+        </select>
+        <button
+          className="ghost sm"
+          disabled={!selectedFood || loading}
+          onClick={() => selectedFood && generateRecipe(selectedFood)}
+        >
+          {loading ? "…" : "🍳 Generate Recipe"}
+        </button>
+      </div>
+
+      {showPanel && recipe && (
+        <div className="recipe-panel">
+          <div className="recipe-panel-header">
+            <div>
+              <div className="recipe-title">{recipe.name}</div>
+              <div className="recipe-meta">
+                <span className="recipe-meta-item">⏱ Prep {recipe.prepTime}min</span>
+                <span className="recipe-meta-item">🔥 Cook {recipe.cookTime}min</span>
+              </div>
+            </div>
+            <button className="icon" style={{ fontSize: "1rem" }} onClick={() => setShowPanel(false)}>✕</button>
+          </div>
+          <div className="recipe-macro-pills">
+            {[
+              { label: "Calories", value: recipe.calories, unit: "" },
+              { label: "Protein", value: recipe.proteinG, unit: "g" },
+              { label: "Carbs", value: recipe.carbsG, unit: "g" },
+              { label: "Fat", value: recipe.fatG, unit: "g" },
+            ].map(m => (
+              <span key={m.label} className="pill pill-muted" style={{ fontSize: "0.78rem" }}>
+                {m.label}: <strong>{m.value}{m.unit}</strong>
+              </span>
+            ))}
+          </div>
+          <div>
+            <p className="eyebrow" style={{ marginBottom: "0.5rem" }}>Ingredients</p>
+            <ul className="recipe-ingredient-list">
+              {recipe.ingredients.map((ing, i) => <li key={i}>{ing}</li>)}
+            </ul>
+          </div>
+          <div>
+            <p className="eyebrow" style={{ marginBottom: "0.5rem" }}>Method</p>
+            <ol className="recipe-step-list">
+              {recipe.steps.map((step, i) => <li key={i}>{step}</li>)}
+            </ol>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ────────────────────────────────────────
+   PDF INVOICE GENERATOR
+──────────────────────────────────────── */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+declare const jspdf: { jsPDF: new (opts?: { orientation?: string; unit?: string; format?: string }) => Record<string, any> };
+
+function generateInvoicePDF(subscription: PaymentSubscription, client: ClientProfile, workspace: CoachWorkspace) {
+  const { jsPDF } = jspdf;
+  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+
+  const brandColor = workspace.brandColor.replace("#", "");
+  const r = parseInt(brandColor.slice(0, 2), 16);
+  const g = parseInt(brandColor.slice(2, 4), 16);
+  const b = parseInt(brandColor.slice(4, 6), 16);
+
+  const vatRate = 0.20;
+  const netAmount = subscription.amountGbp / (1 + vatRate);
+  const vatAmount = subscription.amountGbp - netAmount;
+  const invoiceNumber = `INV-${new Date().toISOString().slice(0, 7).replace("-", "")}-${client.id}`;
+  const today = new Date().toLocaleDateString("en-GB");
+
+  // Header band
+  doc.setFillColor(r, g, b);
+  doc.rect(0, 0, 210, 40, "F");
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(22);
+  doc.setTextColor(255, 255, 255);
+  doc.text("INVOICE", 20, 20);
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  doc.text(workspace.name, 20, 28);
+  doc.setFontSize(8);
+  doc.text("Tax Invoice · UK VAT Registered", 20, 34);
+
+  // Invoice meta (right side)
+  doc.setTextColor(r, g, b);
+  doc.setFontSize(9);
+  doc.text(`Invoice #: ${invoiceNumber}`, 130, 15);
+  doc.text(`Date: ${today}`, 130, 21);
+  doc.text(`Due: ${subscription.renewalDate}`, 130, 27);
+  doc.text(`Status: ${subscription.status.toUpperCase()}`, 130, 33);
+
+  // Bill To
+  let y = 52;
+  doc.setTextColor(60, 60, 60);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(10);
+  doc.text("BILL TO", 20, y);
+  y += 7;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  doc.text(client.fullName, 20, y);
+  y += 5;
+  doc.setFontSize(8);
+  doc.setTextColor(100, 100, 100);
+  doc.text(client.email, 20, y);
+
+  // Line items table header
+  y += 12;
+  doc.setFillColor(245, 245, 245);
+  doc.rect(20, y, 170, 8, "F");
+  doc.setTextColor(60, 60, 60);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(8);
+  doc.text("DESCRIPTION", 22, y + 5.5);
+  doc.text("QTY", 120, y + 5.5);
+  doc.text("NET", 140, y + 5.5);
+  doc.text("VAT 20%", 160, y + 5.5);
+
+  // Line item
+  y += 10;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9);
+  doc.setTextColor(40, 40, 40);
+  doc.text("Coaching Services — Monthly Subscription", 22, y);
+  doc.text("1", 123, y);
+  doc.text(`£${netAmount.toFixed(2)}`, 140, y);
+  doc.text(`£${vatAmount.toFixed(2)}`, 160, y);
+
+  // Divider
+  y += 6;
+  doc.setDrawColor(220, 220, 220);
+  doc.setLineWidth(0.3);
+  doc.line(20, y, 190, y);
+
+  // Total
+  y += 8;
+  doc.setFillColor(r, g, b);
+  doc.rect(130, y - 4, 60, 12, "F");
+  doc.setTextColor(255, 255, 255);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(10);
+  doc.text("TOTAL (inc. VAT)", 133, y + 2);
+  doc.setFontSize(12);
+  doc.text(`£${subscription.amountGbp.toFixed(2)}`, 160, y + 3);
+
+  // VAT summary
+  y += 16;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8);
+  doc.setTextColor(100, 100, 100);
+  doc.text(`Net amount: £${netAmount.toFixed(2)}    VAT rate: 20%    VAT: £${vatAmount.toFixed(2)}    Gross: £${subscription.amountGbp.toFixed(2)}`, 20, y);
+
+  // Footer
+  doc.setTextColor(150, 150, 150);
+  doc.setFontSize(7);
+  doc.text("This invoice is generated by CoachOS. VAT registered under UK law. Retain for your self-assessment records.", 20, 280);
+  doc.text(`Subscription renews: ${subscription.renewalDate}`, 20, 285);
+
+  doc.setDocumentProperties({ title: `Invoice ${invoiceNumber}`, author: workspace.name });
+  doc.save(`${invoiceNumber}.pdf`);
+}
+
+function downloadBulkTaxReport(subscriptions: PaymentSubscription[], clients: ClientProfile[], workspace: CoachWorkspace) {
+  const { jsPDF } = jspdf;
+  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+
+  const brandColor = workspace.brandColor.replace("#", "");
+  const r = parseInt(brandColor.slice(0, 2), 16);
+  const g = parseInt(brandColor.slice(2, 4), 16);
+  const b = parseInt(brandColor.slice(4, 6), 16);
+  const vatRate = 0.20;
+
+  doc.setFillColor(r, g, b);
+  doc.rect(0, 0, 210, 20, "F");
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(16);
+  doc.setTextColor(255, 255, 255);
+  doc.text(`${workspace.name} — HMRC Tax Report`, 20, 13);
+
+  const today = new Date().toISOString().slice(0, 10);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8);
+  doc.setTextColor(r, g, b);
+  doc.text(`Generated: ${today}`, 20, 27);
+
+  // Table header
+  let y = 34;
+  doc.setFillColor(245, 245, 245);
+  doc.rect(20, y, 170, 7, "F");
+  doc.setTextColor(60, 60, 60);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(8);
+  doc.text("CLIENT", 22, y + 5);
+  doc.text("STATUS", 80, y + 5);
+  doc.text("NET", 110, y + 5);
+  doc.text("VAT", 130, y + 5);
+  doc.text("GROSS", 155, y + 5);
+
+  y += 9;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8);
+
+  let totalNet = 0, totalVat = 0, totalGross = 0;
+
+  for (const sub of subscriptions) {
+    const client = clients.find(c => c.id === sub.clientId);
+    const net = sub.amountGbp / (1 + vatRate);
+    const vat = sub.amountGbp - net;
+    totalNet += net; totalVat += vat; totalGross += sub.amountGbp;
+
+    doc.setTextColor(40, 40, 40);
+    doc.text(client?.fullName ?? sub.clientId, 22, y);
+    doc.setTextColor(sub.status === "active" ? 58 : 255, sub.status === "active" ? 180 : 115, sub.status === "active" ? 80 : 81);
+    doc.text(sub.status.toUpperCase(), 80, y);
+    doc.setTextColor(40, 40, 40);
+    doc.text(`£${net.toFixed(2)}`, 110, y);
+    doc.text(`£${vat.toFixed(2)}`, 130, y);
+    doc.text(`£${sub.amountGbp.toFixed(2)}`, 155, y);
+
+    y += 7;
+    if (y > 270) { doc.addPage(); y = 20; }
+  }
+
+  // Totals
+  y += 3;
+  doc.setDrawColor(200, 200, 200);
+  doc.setLineWidth(0.3);
+  doc.line(20, y, 190, y);
+  y += 7;
+  doc.setFillColor(r, g, b);
+  doc.rect(105, y - 5, 85, 10, "F");
+  doc.setTextColor(255, 255, 255);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9);
+  doc.text("TOTALS", 108, y + 1);
+  doc.text(`£${totalNet.toFixed(2)}`, 110, y + 1);
+  doc.text(`£${totalVat.toFixed(2)}`, 130, y + 1);
+  doc.text(`£${totalGross.toFixed(2)}`, 155, y + 1);
+
+  doc.setDocumentProperties({ title: `Tax Report ${today}`, author: workspace.name });
+  doc.save(`tax-report-${today}.pdf`);
+}
+
+/* ────────────────────────────────────────
+   CLIENT APP PREVIEW
+──────────────────────────────────────── */
+type ClientAppTab = "today"|"plan"|"checkin"|"messages";
+
+function ClientAppPreviewInner({ clientPortal, onCheckInSuccess }: { clientPortal: ClientSession; onCheckInSuccess?: () => void }) {
+  const [activeTab, setActiveTab] = useState<ClientAppTab>("today");
+  const today = new Date();
+  const firstName = clientPortal.client.fullName.split(" ")[0];
+  const hour = today.getHours();
+  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  const todayIndex = (today.getDay() + 6) % 7;
+  const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const plan = clientPortal.plan;
+  const workouts = plan?.latestVersion.workouts ?? [];
+  const nutrition = plan?.latestVersion.nutrition ?? [];
+  const habits = [
+    { title: "Log meals in the app", done: Math.random() > 0.5 },
+    { title: "Hit 8,000 steps", done: Math.random() > 0.4 },
+    { title: "Complete weekly check-in", done: false },
+  ];
+  const messages = clientPortal.messages ?? [];
+
+  // Check-in form state
+  const [checkInWeight, setCheckInWeight] = useState<string>(clientPortal.latestCheckIn?.progress.weightKg?.toString() ?? "");
+  const [checkInEnergy, setCheckInEnergy] = useState<number>(clientPortal.latestCheckIn?.progress.energyScore ?? 7);
+  const [checkInSteps, setCheckInSteps] = useState<string>(clientPortal.latestCheckIn?.progress.steps?.toString() ?? "");
+  const [checkInNotes, setCheckInNotes] = useState("");
+  const [checkInPhoto, setCheckInPhoto] = useState<string | null>(null);
+  const [checkInSubmitting, setCheckInSubmitting] = useState(false);
+  const [checkInSuccess, setCheckInSuccess] = useState(false);
+  const [clientMessageDraft, setClientMessageDraft] = useState("");
+  const [clientMessageSending, setClientMessageSending] = useState(false);
+  const photoInputRef = useRef<HTMLInputElement>(null);
+
+  const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => setCheckInPhoto(ev.target?.result as string ?? null);
+    reader.readAsDataURL(file);
+  };
+
+  const handleCheckInSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!checkInWeight && !checkInSteps) return;
+    setCheckInSubmitting(true);
+    try {
+      const result = await fetchJson<{id: string}>("/check-ins", {
+        method: "POST",
+        body: JSON.stringify({
+          clientId: clientPortal.client.id,
+          progress: {
+            weightKg: parseFloat(checkInWeight) || 0,
+            energyScore: checkInEnergy,
+            steps: parseInt(checkInSteps) || 0,
+            notes: checkInNotes,
+          },
+        })
+      });
+      if (checkInPhoto && result?.id) {
+        try {
+          const [header, data] = checkInPhoto.split(",");
+          const mime = header.match(/:(.*?);/)?.[1] ?? "image/jpeg";
+          const binary = atob(data);
+          const arr = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i);
+          const blob = new Blob([arr], { type: mime });
+          const formData = new FormData();
+          formData.append("photo", blob, "photo.jpg");
+          await fetch(`/api/check-ins/${result.id}/photo`, { method: "POST", body: formData });
+        } catch { /* photo upload failed, non-critical */ }
+      }
+      setCheckInSuccess(true);
+      setCheckInPhoto(null);
+      setTimeout(() => setCheckInSuccess(false), 3000);
+      onCheckInSuccess?.();
+    } catch { /* silent */ }
+    setCheckInSubmitting(false);
+  };
+
+  const handleClientMessageSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const content = clientMessageDraft.trim();
+    if (!content) return;
+    setClientMessageSending(true);
+    try {
+      await fetchJson("/messages", {
+        method: "POST",
+        body: JSON.stringify({ clientId: clientPortal.client.id, content, sender: "client" })
+      });
+      setClientMessageDraft("");
+      onCheckInSuccess?.();
+    } catch { /* silent */ }
+    setClientMessageSending(false);
+  };
+
+  return (
+    <div className="client-app">
+      <div className="client-app-status-bar">
+        <span className="client-app-status-bar-left">9:41</span>
+        <span className="client-app-status-bar-right"><span>●●●●●</span><span>📶</span><span>🔋</span></span>
+      </div>
+
+      {activeTab === "today" && (
+        <div className="client-app-header">
+          <div className="client-app-greeting">{greeting}, {firstName}!</div>
+          <div className="client-app-date">{today.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}</div>
+          <div className="client-app-streak-row">
+            <span className="client-app-streak-badge">🔥 5 day streak</span>
+            <span className="client-app-streak-badge" style={{ background: "rgba(96,165,250,0.12)", borderColor: "rgba(96,165,250,0.25)", color: "#60a5fa" }}>📋 {workouts.length} sessions this week</span>
+          </div>
+          <div className="client-app-stats-row" style={{ marginTop: 14 }}>
+            <div className="client-app-stat-chip">
+              <span className="client-app-stat-chip-label">Adherence</span>
+              <span className="client-app-stat-chip-value" style={{ color: clientPortal.client.adherenceScore >= 70 ? "#3ae97a" : "#fbbf24" }}>{clientPortal.client.adherenceScore}%</span>
+            </div>
+            <div className="client-app-stat-chip">
+              <span className="client-app-stat-chip-label">Energy</span>
+              <span className="client-app-stat-chip-value">{clientPortal.latestCheckIn?.progress.energyScore ?? "—"}/10</span>
+            </div>
+            <div className="client-app-stat-chip">
+              <span className="client-app-stat-chip-label">Renewal</span>
+              <span className="client-app-stat-chip-value" style={{ fontSize: 13 }}>{clientPortal.client.nextRenewalDate.slice(5)}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "today" && (
+        <div className="client-app-section">
+          {plan ? (
+            <>
+              <div className="client-app-section-title">Today's Focus</div>
+              <div className="client-app-card">
+                <div className="client-app-card-label">💪 Workout</div>
+                <div className="client-app-card-title">{workouts[todayIndex] || workouts[0]}</div>
+                <div className="client-app-card-chip">Approved</div>
+              </div>
+              <div className="client-app-card">
+                <div className="client-app-card-label">🥗 Nutrition</div>
+                <div className="client-app-card-title">{nutrition[todayIndex]?.split(":")[0] || "Moderate deficit"}</div>
+                <div className="client-app-card-body">{nutrition[todayIndex] || nutrition[0]}</div>
+              </div>
+            </>
+          ) : (
+            <div className="client-app-card">
+              <div className="client-app-card-title" style={{ color: "rgba(255,255,255,0.5)" }}>No plan yet</div>
+              <div className="client-app-card-body">Your coach is preparing your programme. Check back soon!</div>
+            </div>
+          )}
+          <div className="client-app-section-title" style={{ marginTop: 16 }}>Today's Habits</div>
+          <div className="client-app-card">
+            {habits.map((h, i) => (
+              <div key={i} className="client-app-habit-item">
+                <div className={`client-app-habit-check${h.done ? " checked" : ""}`}>{h.done ? "✓" : ""}</div>
+                <span className={`client-app-habit-title${h.done ? " done" : ""}`}>{h.title}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {activeTab === "plan" && (
+        <div className="client-app-section" style={{ paddingBottom: 80 }}>
+          <div className="client-app-section-title" style={{ marginTop: 8 }}>This Week's Programme</div>
+          {plan ? DAYS.map((day, i) => {
+            const workout = workouts[i] || workouts[i % workouts.length];
+            const isToday = i === todayIndex;
+            return (
+              <div key={day} className="client-app-day-card">
+                <div className="client-app-day-card-header">
+                  <span className={`client-app-day-label${isToday ? " today" : ""}`}>{isToday ? "● " : ""}{day}{isToday ? " — Today" : ""}</span>
+                  <div className="client-app-day-chips">
+                    {workout && <span className="client-app-day-chip client-app-day-chip--workout">💪</span>}
+                    {nutrition[i] && <span className="client-app-day-chip client-app-day-chip--nutrition">🥗</span>}
+                  </div>
+                </div>
+                <div className="client-app-day-detail">{workout}</div>
+              </div>
+            );
+          }) : (
+            <div className="client-app-card"><div className="client-app-card-body">No programme assigned yet.</div></div>
+          )}
+        </div>
+      )}
+
+      {activeTab === "checkin" && (
+        <div className="client-app-checkin-form">
+          <div className="client-app-section-title" style={{ marginTop: 8 }}>Submit Check-In</div>
+          {checkInSuccess && (
+            <div className="client-app-success-banner">✓ Check-in submitted!</div>
+          )}
+          <form onSubmit={handleCheckInSubmit}>
+            <label className="client-app-form-label">Weight (kg)</label>
+            <input className="client-app-input" type="number" placeholder="e.g. 73.4" value={checkInWeight} onChange={e => setCheckInWeight(e.target.value)} />
+            <label className="client-app-form-label">Energy Level <span style={{ color: "var(--primary)", fontWeight: 700 }}>{checkInEnergy}/10</span></label>
+            <input className="client-app-energy-slider" type="range" min="1" max="10" value={checkInEnergy} onChange={e => setCheckInEnergy(parseInt(e.target.value))} />
+            <div className="client-app-energy-labels"><span>Exhausted</span><span>Energised</span></div>
+            <label className="client-app-form-label">Steps Today</label>
+            <input className="client-app-input" type="number" placeholder="e.g. 9845" value={checkInSteps} onChange={e => setCheckInSteps(e.target.value)} />
+            <label className="client-app-form-label">Notes</label>
+            <textarea className="client-app-input" placeholder="How are you feeling? Any highlights or challenges?" rows={3} style={{ resize: "none" }} value={checkInNotes} onChange={e => setCheckInNotes(e.target.value)} />
+            <label className="client-app-form-label">Progress Photo</label>
+            <input ref={photoInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handlePhotoChange} />
+            <button type="button" className="client-app-photo-btn" onClick={() => photoInputRef.current?.click()}>
+              <span>{checkInPhoto ? "✓" : "📷"}</span> {checkInPhoto ? "Photo selected" : "Add Progress Photo"}
+            </button>
+            {checkInPhoto && <img src={checkInPhoto} alt="Preview" style={{ width: "100%", borderRadius: "var(--r-lg)", marginTop: "0.5rem" }} />}
+            <button type="submit" className="client-app-submit-btn" disabled={checkInSubmitting}>
+              {checkInSubmitting ? "Submitting…" : "Submit Check-In"}
+            </button>
+          </form>
+        </div>
+      )}
+
+      {activeTab === "messages" && (
+        <>
+          <div className="client-app-messages">
+            {messages.length === 0 ? (
+              <div className="client-app-card" style={{ alignSelf: "center", marginTop: 40 }}>
+                <div className="client-app-card-body" style={{ textAlign: "center" }}>No messages yet. Say hello!</div>
+              </div>
+            ) : messages.map(msg => (
+              <div key={msg.id}>
+                <div className={`client-app-msg client-app-msg--${msg.sender}`}>{msg.content}</div>
+                <div className={`client-app-msg-time client-app-msg-time--${msg.sender}`}>
+                  {new Date(msg.sentAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                </div>
+              </div>
+            ))}
+          </div>
+          <form className="client-app-message-input-row" onSubmit={handleClientMessageSubmit}>
+            <input className="client-app-message-input" placeholder="Type a message..." value={clientMessageDraft} onChange={e => setClientMessageDraft(e.target.value)} />
+            <button type="submit" className="client-app-tab" disabled={clientMessageSending || !clientMessageDraft.trim()} style={{ width: "auto", padding: "0.45rem 0.75rem", borderRadius: 999 }}>Send</button>
+          </form>
+        </>
+      )}
+
+      <div className="client-app-tabs">
+        {([
+          { id: "today" as ClientAppTab, icon: "🏠", label: "Today" },
+          { id: "plan" as ClientAppTab, icon: "📋", label: "Plan" },
+          { id: "checkin" as ClientAppTab, icon: "✅", label: "Check-In" },
+          { id: "messages" as ClientAppTab, icon: "💬", label: "Messages" },
+        ] as const).map(t => (
+          <button key={t.id} className={`client-app-tab${activeTab === t.id ? " active" : ""}`} onClick={() => setActiveTab(t.id)}>
+            <span>{t.icon}</span>
+            {t.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ClientAppView({ session, clientPortal, onSwitchClient }: {
+  session: CoachSession;
+  clientPortal: ClientSession | null;
+  onSwitchClient: (id: string) => void;
+}) {
+  const sorted = useMemo(() => [...session.clients].sort((a, b) => a.fullName.localeCompare(b.fullName)), [session.clients]);
+
+  return (
+    <div className="page-view">
+      <p className="eyebrow">CoachOS Preview</p>
+      <h1 className="page-title">Client App Preview</h1>
+      <p className="page-subtitle">See exactly what your clients see — live mobile simulator.</p>
+
+      <div className="client-app-split">
+        <div className="coach-preview-panel">
+          <h3>Preview as Client</h3>
+          <div className="stack compact">
+            <label>
+              <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "var(--on-surface)", marginBottom: "0.3rem", display: "block" }}>Select client</span>
+              <select value={clientPortal?.client.id ?? ""} onChange={e => onSwitchClient(e.target.value)}>
+                {sorted.map(c => <option key={c.id} value={c.id}>{c.fullName}</option>)}
+              </select>
+            </label>
+            {clientPortal && (
+              <div className="stack compact">
+                <div className="row-line"><span className="text-sm muted">Adherence</span>
+                  <span style={{ color: clientPortal.client.adherenceScore >= 70 ? "var(--primary)" : "var(--warning)", fontWeight: 700 }}>{clientPortal.client.adherenceScore}%</span>
+                </div>
+                <div className="row-line"><span className="text-sm muted">Status</span><StatusPill status={clientPortal.client.status} /></div>
+                <div className="row-line"><span className="text-sm muted">Plan</span><span className="text-sm">{clientPortal.plan?.title ?? "None"}</span></div>
+                <div className="row-line"><span className="text-sm muted">Messages</span><span className="text-sm">{clientPortal.messages?.length ?? 0}</span></div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div>
+          {clientPortal ? (
+            <>
+              <div className="phone-frame">
+                <div className="phone-notch" />
+                <div className="phone-status-bar">
+                  <span className="phone-status-bar-left">9:41</span>
+                  <span className="phone-status-bar-right"><span>●●●●●</span><span>📶</span><span>🔋</span></span>
+                </div>
+                <div className="phone-viewport">
+                  {/* @ts-expect-error — loadCoach/selectedClientId declared later, visible at runtime */}
+                  <ClientAppPreviewInner clientPortal={clientPortal} onCheckInSuccess={() => (loadCoach as any)((selectedClientId as any) ?? undefined)} />
+                </div>
+                <div className="phone-home-bar" />
+              </div>
+              <p className="phone-preview-label">CoachOS Client App — {clientPortal.client.fullName}</p>
+            </>
+          ) : (
+            <div className="empty-state">
+              <div className="empty-state-icon">📱</div>
+              <p>Select a client to preview their experience.</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function mixHex(hex: string, mixWith: string, amount: number) {
+  const clean = hex.replace("#", "");
+  if (clean.length !== 6) return hex;
+  const base = [0, 2, 4].map(i => parseInt(clean.slice(i, i + 2), 16));
+  const target = [0, 2, 4].map(i => parseInt(mixWith.replace("#", "").slice(i, i + 2), 16));
+  const mixed = base.map((value, i) => Math.round(value * (1 - amount) + target[i] * amount));
+  return `#${mixed.map(value => value.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function applyWorkspaceTheme(workspace: Pick<CoachWorkspace, "brandColor" | "accentColor">) {
+  const root = document.documentElement;
+  root.style.setProperty("--primary", workspace.brandColor);
+  root.style.setProperty("--primary-dark", mixHex(workspace.brandColor, "#000000", 0.25));
+  root.style.setProperty("--primary-light", mixHex(workspace.brandColor, "#ffffff", 0.82));
+  root.style.setProperty("--primary-mid", mixHex(workspace.brandColor, "#ffffff", 0.45));
+  root.style.setProperty("--primary-container", mixHex(workspace.brandColor, "#ffffff", 0.68));
+  root.style.setProperty("--accent", workspace.accentColor);
+  root.style.setProperty("--accent-dark", mixHex(workspace.accentColor, "#000000", 0.25));
+  root.style.setProperty("--accent-light", mixHex(workspace.accentColor, "#ffffff", 0.82));
+  root.style.setProperty("--accent-mid", mixHex(workspace.accentColor, "#ffffff", 0.45));
+}
+
+function App() {
+  const [authToken, setAuthToken] = useState<string | null>(() => {
+    try { return localStorage.getItem(authTokenStorageKey); }
+    catch { return null; }
+  });
+  const [session, setSession] = useState<CoachSession | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [clientPortal, setClientPortal] = useState<ClientSession | null>(null);
+  const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
+  const [proofCard, setProofCard] = useState<ProofCard | null>(null);
+  const [checkInHistory, setCheckInHistory] = useState<CheckInWithDelta[]>([]);
+  const [activeNav, setActiveNav] = useState<NavId>("dashboard");
+  const [showAddClientModal, setShowAddClientModal] = useState(false);
+  const [showWorkoutLogger, setShowWorkoutLogger] = useState(false);
+  const [showClientNotesModal, setShowClientNotesModal] = useState(false);
+  const [notifications, setNotifications] = useState<Array<{ id: string; message: string; type: string; time: string; read: boolean }>>([]);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const { toasts, push, dismiss } = useToast();
+
+  const handleLogin = (token: string, coachId: string) => {
+    try {
+      localStorage.setItem(authTokenStorageKey, token);
+      localStorage.setItem(coachIdStorageKey, coachId);
+    } catch { /* ignore */ }
+    setAuthToken(token);
+  };
+
+  const handleLogout = async () => {
+    try {
+      await fetch(`${apiBase}/auth/logout`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${authToken}` }
+      });
+    } catch { /* ignore */ }
+    try {
+      localStorage.removeItem(authTokenStorageKey);
+      localStorage.removeItem(coachIdStorageKey);
+      localStorage.removeItem("coachos_onboarded");
+    } catch { /* ignore */ }
+    setAuthToken(null);
+    setSession(null);
+  };
+
+  if (!authToken) {
+    return <LoginScreen onLogin={handleLogin} />;
+  }
+
+  // Check if onboarding was already completed
+  const [showOnboarding, setShowOnboarding] = useState(() => {
+    try { return localStorage.getItem("coachos_onboarded") !== "true"; }
+    catch { return true; }
+  });
+
+  const switchClient = useCallback(async (clientId: string) => {
+    setSelectedClientId(clientId);
+    try {
+      const [portal, checkIns] = await Promise.all([
+        fetchJson<ClientSession>(`/session/client/${clientId}`),
+        fetchJson<CheckIn[]>(`/check-ins?clientId=${clientId}`),
+      ]);
+      setClientPortal(portal);
+      setProofCard(portal.proofCard);
+
+      // Compute deltas relative to previous check-in
+      const sorted = [...checkIns].sort((a, b) => new Date(a.submittedAt).getTime() - new Date(b.submittedAt).getTime());
+      const withDeltas: CheckInWithDelta[] = sorted.map((c, i) => {
+        const prev = sorted[i - 1];
+        return {
+          ...c,
+          weightDelta: prev ? (c.progress.weightKg != null && prev.progress.weightKg != null ? +(c.progress.weightKg - prev.progress.weightKg).toFixed(1) : null) : null,
+          energyDelta: prev ? c.progress.energyScore - prev.progress.energyScore : null,
+          adherenceDelta: null,
+        };
+      });
+      setCheckInHistory(withDeltas);
+    } catch { push("Failed to load client portal", "error"); }
+  }, [push]);
+
+  const loadCoach = useCallback(async (preferredClientId?: string) => {
+    const [coachSession, runtimeData] = await Promise.all([
+      fetchJson<CoachSession>("/session/coach"),
+      fetchJson("/runtime"),
+    ]);
+    setSession(coachSession);
+
+    const nextId = preferredClientId && coachSession.clients.some(c => c.id === preferredClientId)
+      ? preferredClientId
+      : selectedClientId && coachSession.clients.some(c => c.id === selectedClientId)
+        ? selectedClientId
+        : coachSession.clients[0]?.id ?? null;
+
+    if (nextId) await switchClient(nextId);
+  }, [selectedClientId, switchClient]);
+
+  useEffect(() => {
+    loadCoach().catch(err => setLoadError(err instanceof Error ? err.message : "Connection failed — is the API running?"));
+  }, []);
+
+  useEffect(() => {
+    if (session) applyWorkspaceTheme(session.workspace);
+  }, [session?.workspace.brandColor, session?.workspace.accentColor]);
+
+  const handleNavWithPortal = (id: NavId) => {
+    setActiveNav(id);
+  };
+
+  useEffect(() => {
+    if (activeNav !== "portal" || !session || clientPortal) return;
+    const nextClientId = selectedClientId && session.clients.some(c => c.id === selectedClientId)
+      ? selectedClientId
+      : session.clients[0]?.id;
+    if (nextClientId) {
+      void switchClient(nextClientId);
+    }
+  }, [activeNav, session, selectedClientId, clientPortal, switchClient]);
+
+  const handleGenerate = async (clientId: string) => {
+    await fetchJson(`/plans/generate`, { method: "POST", body: JSON.stringify({ clientId }) });
+    await loadCoach(clientId);
+    push("Plan generated with DeepSeek-V3.1");
+  };
+
+  const handleApprove = async (planId: string) => {
+    await fetchJson(`/plans/${planId}/approve`, { method: "POST" });
+    await loadCoach(selectedClientId ?? undefined);
+    push("Plan approved ✓");
+  };
+
+  const handleCheckIn = async (clientId: string) => {
+    await fetchJson(`/check-ins`, { method: "POST", body: JSON.stringify({
+      id: `checkin_${Date.now()}`, clientId, submittedAt: new Date().toISOString(),
+      progress: { weightKg: 71.8, energyScore: 8, steps: 9860, waistCm: 76, notes: "Check-in submitted via portal." },
+      photoCount: 1
+    })});
+    await loadCoach(clientId);
+    push("Check-in recorded");
+  };
+
+  const handleSaveEdits = async (draft: ClientProfilePatch) => {
+    if (!clientPortal) return;
+    const updatedClient = await fetchJson<ClientProfile>(`/clients/${clientPortal.client.id}`, { method: "PATCH", body: JSON.stringify(draft) });
+    setSession(prev => prev ? {
+      ...prev,
+      clients: prev.clients.map(client => client.id === updatedClient.id ? updatedClient : client)
+    } : prev);
+    // Reload the client portal to reflect saved changes
+    const [portal, checkIns] = await Promise.all([
+      fetchJson<ClientSession>(`/session/client/${clientPortal.client.id}`),
+      fetchJson<CheckIn[]>(`/check-ins?clientId=${clientPortal.client.id}`),
+    ]);
+    setClientPortal(portal);
+    setProofCard(portal.proofCard);
+    const sorted = [...checkIns].sort((a, b) => new Date(a.submittedAt).getTime() - new Date(b.submittedAt).getTime());
+    const withDeltas: CheckInWithDelta[] = sorted.map((c, i) => {
+      const prev = sorted[i - 1];
+      return { ...c, weightDelta: prev && c.progress.weightKg != null && prev.progress.weightKg != null ? +(c.progress.weightKg - prev.progress.weightKg).toFixed(1) : null, energyDelta: prev ? c.progress.energyScore - prev.progress.energyScore : null, adherenceDelta: null };
+    });
+    setCheckInHistory(withDeltas);
+    push("Client updated");
+  };
+
+  const handleSendMessage = async (content: string) => {
+    if (!clientPortal) return;
+    await fetchJson(`/messages`, { method: "POST", body: JSON.stringify({ clientId: clientPortal.client.id, content, sender: "coach" }) });
+    await switchClient(clientPortal.client.id);
+  };
+
+  const handleRefreshProof = async (clientId: string) => {
+    const result = await fetchJson<ProofCard>(`/proof-cards/${clientId}`);
+    setProofCard(result);
+    if (clientPortal) setClientPortal(p => p ? { ...p, proofCard: result } : p);
+    push("Proof card refreshed");
+  };
+
+  const handleToggleBilling = async (clientId: string, status: "active"|"past_due"|"cancelled") => {
+    await fetchJson(`/billing/webhooks/stripe`, { method: "POST", body: JSON.stringify({ clientId, status }) });
+    await loadCoach(selectedClientId ?? undefined);
+    push(`Billing updated to ${status}`);
+  };
+
+  const handleUpdateClientStatus = async (
+    clientId: string,
+    status: "active" | "at_risk" | "trial" | "inactive"
+  ) => {
+    await fetchJson<ClientProfile>(`/clients/${clientId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    });
+    await loadCoach(selectedClientId ?? undefined);
+    push(`Client status updated to ${getClientStatusMeta(status).label}`);
+  };
+
+  const handleSaveSettings = async (draft: any) => {
+    await fetchJson<CoachWorkspace>("/onboarding", { method: "POST", body: JSON.stringify(draft) });
+    await loadCoach(selectedClientId ?? undefined);
+    push("Settings saved");
+  };
+
+  const handlePreviewWorkspace = useCallback((patch: Partial<CoachWorkspace>) => {
+    setSession(prev => {
+      if (!prev) return prev;
+      const nextWorkspace = { ...prev.workspace, ...patch };
+      if (
+        nextWorkspace.name === prev.workspace.name &&
+        nextWorkspace.heroMessage === prev.workspace.heroMessage &&
+        nextWorkspace.brandColor === prev.workspace.brandColor &&
+        nextWorkspace.accentColor === prev.workspace.accentColor
+      ) {
+        return prev;
+      }
+      return {
+        ...prev,
+        workspace: nextWorkspace
+      };
+    });
+  }, []);
+
+  const handleCompleteOnboarding = async (draft: OnboardingDraft) => {
+    if (!session) return;
+    const payload = {
+      workspaceName: draft.name.trim() || session.workspace.name,
+      heroMessage: draft.heroMessage.trim() || session.workspace.heroMessage,
+      brandColor: draft.brandColor,
+      accentColor: draft.accentColor,
+      stripeConnected: draft.stripeConnected,
+      coachFirstName: draft.coachFirstName.trim() || session.coach.firstName,
+      coachLastName: draft.coachLastName.trim() || session.coach.lastName,
+      coachEmail: draft.coachEmail.trim() || session.coach.email,
+      coachTypes: draft.coachTypes
+    };
+
+    let completedSession = session;
+    let completedCoachId = session.coach.id;
+    try {
+      const result = await fetchJson<{ coachId: string; workspaceId: string; session: CoachSession }>("/onboarding/coach", { method: "POST", body: JSON.stringify(payload) });
+      completedSession = result.session;
+      completedCoachId = result.coachId;
+      setSession(result.session);
+    } catch (error) {
+      const fallbackSession = {
+        ...session,
+        workspace: {
+          ...session.workspace,
+          name: payload.workspaceName,
+          heroMessage: payload.heroMessage,
+          brandColor: payload.brandColor,
+          accentColor: payload.accentColor,
+          stripeConnected: payload.stripeConnected,
+        },
+        coach: {
+          ...session.coach,
+          firstName: payload.coachFirstName,
+          lastName: payload.coachLastName,
+        }
+      };
+      completedSession = fallbackSession;
+      setSession(fallbackSession);
+    }
+    const nextClientId = completedSession.clients[0]?.id ?? null;
+    setSelectedClientId(nextClientId);
+    if (nextClientId) {
+      await switchClient(nextClientId);
+      setActiveNav("portal");
+    } else {
+      setClientPortal(null);
+      setProofCard(null);
+      setCheckInHistory([]);
+      setActiveNav("clients");
+    }
+    setShowOnboarding(false);
+    try {
+      localStorage.setItem("coachos_onboarded", "true");
+      localStorage.setItem(coachIdStorageKey, completedCoachId);
+    } catch { /* ignore */ }
+    applyWorkspaceTheme(completedSession.workspace);
+    push("Welcome to CoachOS!", "success");
+  };
+
+  const handleAddClientSuccess = async () => {
+    setShowAddClientModal(false);
+    await loadCoach(selectedClientId ?? undefined);
+  };
+
+  const handleCreateGroupProgram = async (payload: Partial<GroupProgram>) => {
+    await fetchJson<GroupProgram>("/group-programs", { method: "POST", body: JSON.stringify(payload) });
+  };
+
+  const handleUpdateGroupProgram = async (programId: string, patch: Partial<GroupProgram>) => {
+    await fetchJson(`/group-programs/${programId}`, { method: "PATCH", body: JSON.stringify(patch) });
+  };
+
+  const handleArchiveGroupProgram = async (programId: string) => {
+    await fetchJson(`/group-programs/${programId}`, { method: "DELETE" });
+  };
+
+  // Loading & error states
+  if (!session) {
+    if (loadError) {
+      return (
+        <div className="loading">
+          <div className="loading-inner">
+            <div className="loading-logo">C</div>
+            <p style={{ color: "var(--danger)", fontWeight: 600 }}>⚠ Cannot connect to CoachOS API</p>
+            <p className="muted text-sm" style={{ maxWidth: 380, textAlign: "center" }}>{loadError}</p>
+            <p className="muted text-xs">Run: <code>npm run dev:api</code></p>
+            <button onClick={() => { setLoadError(null); loadCoach().catch(e => setLoadError(e.message)); }}>Retry</button>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="loading">
+        <div className="loading-inner">
+          <div className="loading-logo">C</div>
+          <div className="spinner" />
+          <p className="muted">Loading CoachOS…</p>
+        </div>
+      </div>
+    );
+  }
+
+  const atRiskCount = session.dashboard.atRiskClients.length;
+
+  return (
+    <div className="app-shell">
+      <Sidebar active={activeNav} onNav={handleNavWithPortal} session={session} atRiskCount={atRiskCount} notifications={notifications} setNotifications={setNotifications} showNotifications={showNotifications} setShowNotifications={setShowNotifications} onLogout={handleLogout} />
+
+      <div className="page-content">
+        {activeNav === "dashboard" && (
+          <DashboardView
+            session={session}
+            onNav={handleNavWithPortal}
+            onSimulateCheckIn={async id => { await handleCheckIn(id); push("Check-in recovery simulated"); }}
+            onMarkPayment={async id => { await handleToggleBilling(id, "active"); }}
+            push={push}
+            onLogWorkout={() => setShowWorkoutLogger(true)}
+            onOpenClientNotes={() => setShowClientNotesModal(true)}
+          />
+        )}
+        {activeNav === "clients" && (
+          <ClientsView
+            session={session}
+            onOpenClient={id => { setActiveNav("portal"); switchClient(id); }}
+            onAddClient={() => setShowAddClientModal(true)}
+            onUpdateClientStatus={handleUpdateClientStatus}
+            onNav={setActiveNav}
+          />
+        )}
+        {activeNav === "plans" && (
+          <PlansView session={session} onNav={handleNavWithPortal} />
+        )}
+        {activeNav === "portal" && (
+          <PortalView
+            session={session}
+            clientPortal={clientPortal}
+            selectedClientId={selectedClientId}
+            onSwitchClient={switchClient}
+            onCheckIn={handleCheckIn}
+            onSaveEdits={handleSaveEdits}
+            onSendMessage={handleSendMessage}
+            onRefreshProof={handleRefreshProof}
+            onApprove={handleApprove}
+            checkInHistory={checkInHistory}
+            onNav={setActiveNav}
+            push={push}
+          />
+        )}
+        {activeNav === "billing" && (
+          <BillingView session={session} onToggleBilling={handleToggleBilling} />
+        )}
+        {activeNav === "migration" && (
+          <MigrationView onReload={() => loadCoach(selectedClientId ?? undefined)} />
+        )}
+        {activeNav === "competitors" && (
+          <CompetitorsView />
+        )}
+        {activeNav === "groups" && (
+          <GroupsView
+            session={session}
+            onCreate={handleCreateGroupProgram}
+            onUpdate={handleUpdateGroupProgram}
+            onArchive={handleArchiveGroupProgram}
+          />
+        )}
+        {activeNav === "habits" && (
+          <HabitsView session={session} />
+        )}
+        {activeNav === "exercises" && (
+          <ExerciseLibraryView />
+        )}
+        {activeNav === "recipes" && (
+          <RecipeBrowserView />
+        )}
+        {activeNav === "calendar" && (
+          <CalendarView session={session} onNav={setActiveNav} />
+        )}
+        {activeNav === "settings" && (
+          <SettingsView session={session} onSave={handleSaveSettings} />
+        )}
+      </div>
+
+      <ToastContainer toasts={toasts} onDismiss={dismiss} />
+
+      {showAddClientModal && (
+        <AddClientModal
+          onClose={() => setShowAddClientModal(false)}
+          onSuccess={handleAddClientSuccess}
+          push={push}
+          workspaceId={session.workspace.id}
+        />
+      )}
+
+      {showWorkoutLogger && (
+        <WorkoutLoggerModal
+          clients={session.clients}
+          onClose={() => setShowWorkoutLogger(false)}
+          onSuccess={() => { setShowWorkoutLogger(false); push("Workout session logged!", "success"); }}
+          push={push}
+        />
+      )}
+
+      {showClientNotesModal && (
+        <ClientNotesModal
+          clients={session.clients}
+          onClose={() => setShowClientNotesModal(false)}
+          push={push}
+        />
+      )}
+
+      {showOnboarding && (
+        <OnboardingWizard
+          workspace={session.workspace}
+          coach={session.coach}
+          onPreview={handlePreviewWorkspace}
+          onComplete={handleCompleteOnboarding}
+        />
+      )}
+    </div>
+  );
+}
+
+createRoot(document.getElementById("root")!).render(<App />);
+

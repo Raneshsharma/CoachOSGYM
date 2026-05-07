@@ -1,0 +1,881 @@
+import { z } from "zod";
+
+export const coachWorkspaceSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  brandColor: z.string(),
+  accentColor: z.string(),
+  heroMessage: z.string(),
+  stripeConnected: z.boolean(),
+  parallelRunDaysLeft: z.number().int().nonnegative()
+});
+
+export const coachUserSchema = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  firstName: z.string(),
+  lastName: z.string(),
+  email: z.email(),
+  gender: z.enum(["male", "female"]).optional().default("male")
+});
+
+export const clientStatusSchema = z.enum(["active", "inactive", "paused", "archived", "lead"]);
+export const clientGenderSchema = z.enum(["male", "female", "non_binary", "prefer_not_to_say"]);
+export const weightUnitSchema = z.enum(["kg", "lb"]);
+
+export const clientProfileSchema = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  fullName: z.string(),
+  email: z.email(),
+  goal: z.string(),
+  status: clientStatusSchema,
+  clientGender: clientGenderSchema.default("prefer_not_to_say"),
+  weightUnit: weightUnitSchema.default("kg"),
+  goalWeight: z.number().positive().nullable().default(null),
+  goalTimelineMonths: z.number().int().min(1).max(12).default(3),
+  adherenceScore: z.number().min(0).max(100),
+  adherenceDeltaWeek: z.number().min(-100).max(100).default(0),
+  currentPlanId: z.string().nullable(),
+  monthlyPriceGbp: z.number().nonnegative(),
+  nextRenewalDate: z.string(),
+  lastCheckInDate: z.string().nullable(),
+  // Extended profile fields
+  healthConditions: z.array(z.object({ label: z.string(), note: z.string() })).default([]),
+  dailyWaterTarget: z.number().int().nonnegative().default(3),
+  dailyStepsTarget: z.number().int().nonnegative().default(10000),
+  supplements: z.array(z.string()).default([]),
+  nutritionCalories: z.number().int().nonnegative().nullable().default(null),
+  nutritionProteinG: z.number().int().nonnegative().nullable().default(null),
+  nutritionFatG: z.number().int().nonnegative().nullable().default(null),
+  nutritionCarbsG: z.number().int().nonnegative().nullable().default(null),
+  nutritionCoachNote: z.string().default("")
+});
+
+export const clientProfilePatchSchema = z
+  .object({
+    fullName: z.string().min(2).optional(),
+    email: z.email().optional(),
+    goal: z.string().min(3).optional(),
+    status: clientStatusSchema.optional(),
+    clientGender: clientGenderSchema.optional(),
+    weightUnit: weightUnitSchema.optional(),
+    goalWeight: z.number().positive().nullable().optional(),
+    goalTimelineMonths: z.number().int().min(1).max(12).optional(),
+    adherenceDeltaWeek: z.number().min(-100).max(100).optional(),
+    monthlyPriceGbp: z.number().nonnegative().optional(),
+    nextRenewalDate: z.string().optional(),
+    healthConditions: z.array(z.object({ label: z.string(), note: z.string() })).optional(),
+    dailyWaterTarget: z.number().int().nonnegative().optional(),
+    dailyStepsTarget: z.number().int().nonnegative().optional(),
+    supplements: z.array(z.string()).optional(),
+    nutritionCalories: z.number().int().nonnegative().nullable().optional(),
+    nutritionProteinG: z.number().int().nonnegative().nullable().optional(),
+    nutritionFatG: z.number().int().nonnegative().nullable().optional(),
+    nutritionCarbsG: z.number().int().nonnegative().nullable().optional(),
+    nutritionCoachNote: z.string().optional()
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: "At least one client field must be provided."
+  });
+
+export const progressMetricSchema = z.object({
+  weightKg: z.number().nullable(),
+  energyScore: z.number().min(1).max(10),
+  steps: z.number().int().nonnegative(),
+  waistCm: z.number().nullable(),
+  adherenceScore: z.number().int().min(0).max(100).nullable(),
+  notes: z.string()
+});
+
+export const checkInSchema = z.object({
+  id: z.string(),
+  clientId: z.string(),
+  submittedAt: z.string(),
+  progress: progressMetricSchema,
+  photoCount: z.number().int().nonnegative()
+});
+
+export const planVersionSchema = z.object({
+  id: z.string(),
+  planId: z.string(),
+  versionNumber: z.number().int().positive(),
+  status: z.enum(["draft", "approved"]),
+  explanation: z.array(z.string()),
+  workouts: z.array(z.string()),
+  nutrition: z.array(z.string()),
+  updatedAt: z.string()
+});
+
+export const programPlanSchema = z.object({
+  id: z.string(),
+  clientId: z.string(),
+  coachId: z.string(),
+  title: z.string(),
+  latestVersion: planVersionSchema
+});
+
+export const paymentSubscriptionSchema = z.object({
+  id: z.string(),
+  clientId: z.string(),
+  status: z.enum(["active", "past_due", "trialing", "cancelled"]),
+  amountGbp: z.number().positive(),
+  renewalDate: z.string()
+});
+
+export const riskAlertSchema = z.object({
+  clientId: z.string(),
+  severity: z.enum(["low", "medium", "high"]),
+  reasons: z.array(z.string()),
+  recommendedAction: z.string()
+});
+
+export const proofCardSchema = z.object({
+  clientId: z.string(),
+  headline: z.string(),
+  body: z.string(),
+  stats: z.array(z.object({ label: z.string(), value: z.string() }))
+});
+
+export const messageSchema = z.object({
+  id: z.string(),
+  clientId: z.string(),
+  coachId: z.string(),
+  sender: z.enum(["coach", "client"]),
+  content: z.string(),
+  sentAt: z.string(),
+  readAt: z.string().nullable()
+});
+
+export const importRowSchema = z.object({
+  name: z.string().min(1),
+  email: z.email(),
+  goal: z.string().min(3),
+  monthlyPriceGbp: z.coerce.number().positive()
+});
+
+export const groupProgramSchema = z.object({
+  id: z.string(),
+  coachId: z.string(),
+  title: z.string(),
+  description: z.string(),
+  goal: z.string(),
+  memberIds: z.array(z.string()),
+  monthlyPriceGbp: z.number().nonnegative(),
+  status: z.enum(["active", "archived", "upcoming"]),
+  createdAt: z.string()
+});
+
+export const habitSchema = z.object({
+  id: z.string(),
+  clientId: z.string(),
+  title: z.string(),
+  target: z.number().int().positive(),
+  frequency: z.enum(["daily", "weekly"]),
+  createdAt: z.string()
+});
+
+export const habitCompletionSchema = z.object({
+  id: z.string(),
+  habitId: z.string(),
+  date: z.string(),
+  completed: z.boolean()
+});
+
+export const nutritionSwapSchema = z.object({
+  id: z.string(),
+  planId: z.string(),
+  originalFood: z.object({
+    name: z.string(),
+    calories: z.number().int().nonnegative(),
+    proteinG: z.number(),
+    carbsG: z.number(),
+    fatG: z.number(),
+    portion: z.string()
+  }),
+  swapSuggestion: z.object({
+    name: z.string(),
+    calories: z.number().int().nonnegative(),
+    proteinG: z.number(),
+    carbsG: z.number(),
+    fatG: z.number(),
+    portion: z.string(),
+    reasoning: z.string()
+  }),
+  appliedAt: z.string().nullable()
+});
+
+export const analyticsEventSchema = z.object({
+  name: z.enum([
+    "coach_onboarded",
+    "client_imported",
+    "plan_generated",
+    "plan_override_by_coach",
+    "client_checkin_completed",
+    "payment_processed",
+    "morning_dashboard_opened",
+    "proof_card_generated",
+    "proof_card_shared",
+    "plan_adapted",
+    "churn_alert_triggered",
+    "group_program_created"
+  ]),
+  actorId: z.string(),
+  occurredAt: z.string(),
+  metadata: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+});
+
+export const demoStateSchema = z.object({
+  workspace: coachWorkspaceSchema,
+  coach: coachUserSchema,
+  clients: z.array(clientProfileSchema),
+  plans: z.array(programPlanSchema),
+  checkIns: z.array(checkInSchema),
+  subscriptions: z.array(paymentSubscriptionSchema),
+  analytics: z.array(analyticsEventSchema),
+  messages: z.array(messageSchema),
+  groupPrograms: z.array(groupProgramSchema).optional(),
+  nutritionSwaps: z.array(nutritionSwapSchema).optional(),
+  habits: z.array(habitSchema).optional(),
+  habitCompletions: z.array(habitCompletionSchema).optional()
+});
+
+export type CoachWorkspace = z.infer<typeof coachWorkspaceSchema>;
+export type CoachUser = z.infer<typeof coachUserSchema>;
+export type ClientProfile = z.infer<typeof clientProfileSchema>;
+export type ClientProfilePatch = z.infer<typeof clientProfilePatchSchema>;
+export type ProgramPlan = z.infer<typeof programPlanSchema>;
+export type PlanVersion = z.infer<typeof planVersionSchema>;
+export type CheckIn = z.infer<typeof checkInSchema>;
+export type PaymentSubscription = z.infer<typeof paymentSubscriptionSchema>;
+export type RiskAlert = z.infer<typeof riskAlertSchema>;
+export type ProofCard = z.infer<typeof proofCardSchema>;
+export type ImportRow = z.infer<typeof importRowSchema>;
+export type AnalyticsEvent = z.infer<typeof analyticsEventSchema>;
+export type Message = z.infer<typeof messageSchema>;
+export type GroupProgram = z.infer<typeof groupProgramSchema>;
+export type NutritionSwap = z.infer<typeof nutritionSwapSchema>;
+export type Habit = z.infer<typeof habitSchema>;
+export type HabitCompletion = z.infer<typeof habitCompletionSchema>;
+
+export type DemoState = z.infer<typeof demoStateSchema>;
+
+export type AdherenceSignalBreakdown = {
+  workoutScore: number;
+  nutritionScore: number;
+  checkInScore: number;
+  stepsScore: number;
+  waterScore: number;
+  habitScore: number;
+  responsivenessScore: number;
+};
+
+export type AdherenceMetrics = {
+  score: number;
+  deltaWeek: number;
+  trendDirection: "up" | "down" | "flat";
+  trendLabel: string;
+  breakdown: AdherenceSignalBreakdown;
+};
+
+const today = new Date("2026-04-03T09:00:00.000Z");
+
+const ADHERENCE_WEIGHTS = {
+  workoutScore: 0.30,
+  nutritionScore: 0.25,
+  checkInScore: 0.15,
+  stepsScore: 0.10,
+  waterScore: 0.05,
+  habitScore: 0.10,
+  responsivenessScore: 0.05
+} as const;
+
+function clampScore(value: number) {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function daysAgoFromToday(dateInput: string) {
+  return Math.floor((today.getTime() - new Date(dateInput).getTime()) / (1000 * 60 * 60 * 24));
+}
+
+function ratioToScore(numerator: number, denominator: number, fallback = 0) {
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator <= 0) return fallback;
+  return clampScore((numerator / denominator) * 100);
+}
+
+function trendLabelForDelta(delta: number) {
+  if (delta > 0) return `↑ +${delta}% this week`;
+  if (delta < 0) return `↓ ${delta}% this week`;
+  return "→ 0% this week";
+}
+
+function isDateWithinDays(dateInput: string, dayWindow: number) {
+  const age = daysAgoFromToday(dateInput);
+  return age >= 0 && age <= dayWindow;
+}
+
+function completionScoreForHabits(habits: Habit[], completions: HabitCompletion[], matcher: (habit: Habit) => boolean) {
+  const relevant = habits.filter(matcher);
+  if (relevant.length === 0) return null;
+  const relevantIds = new Set(relevant.map((habit) => habit.id));
+  const completed = completions.filter((completion) => relevantIds.has(completion.habitId) && completion.completed);
+  const denominator = relevant.reduce((total, habit) => total + habit.target, 0);
+  return ratioToScore(completed.length, denominator || relevant.length, 0);
+}
+
+function deriveResponsivenessScore(messages: Message[]) {
+  if (messages.length === 0) return 50;
+  const coachMessages = messages.filter((message) => message.sender === "coach");
+  const clientMessages = messages.filter((message) => message.sender === "client");
+  if (clientMessages.length === 0) return 30;
+  if (coachMessages.length === 0) return 75;
+  const latestCoach = coachMessages.sort((a, b) => b.sentAt.localeCompare(a.sentAt))[0];
+  const reply = clientMessages
+    .filter((message) => message.sentAt >= latestCoach.sentAt)
+    .sort((a, b) => a.sentAt.localeCompare(b.sentAt))[0];
+  if (!reply) return 40;
+  return isDateWithinDays(reply.sentAt, 7) ? 100 : 70;
+}
+
+export function calculateAdherenceMetrics(input: AdherenceSignalBreakdown & { previousScore: number }): AdherenceMetrics;
+export function calculateAdherenceMetrics(state: DemoState, clientId: string): AdherenceMetrics;
+export function calculateAdherenceMetrics(
+  input: (AdherenceSignalBreakdown & { previousScore: number }) | DemoState,
+  clientId?: string
+): AdherenceMetrics {
+  const signalInput = clientId
+    ? deriveAdherenceSignalInput(input as DemoState, clientId)
+    : input as AdherenceSignalBreakdown & { previousScore: number };
+
+  const score = clampScore(
+    signalInput.workoutScore * ADHERENCE_WEIGHTS.workoutScore +
+    signalInput.nutritionScore * ADHERENCE_WEIGHTS.nutritionScore +
+    signalInput.checkInScore * ADHERENCE_WEIGHTS.checkInScore +
+    signalInput.stepsScore * ADHERENCE_WEIGHTS.stepsScore +
+    signalInput.waterScore * ADHERENCE_WEIGHTS.waterScore +
+    signalInput.habitScore * ADHERENCE_WEIGHTS.habitScore +
+    signalInput.responsivenessScore * ADHERENCE_WEIGHTS.responsivenessScore
+  );
+  const deltaWeek = Math.max(-100, Math.min(100, Math.round(score - signalInput.previousScore)));
+  const trendDirection = deltaWeek > 0 ? "up" : deltaWeek < 0 ? "down" : "flat";
+
+  return {
+    score,
+    deltaWeek,
+    trendDirection,
+    trendLabel: trendLabelForDelta(deltaWeek),
+    breakdown: {
+      workoutScore: signalInput.workoutScore,
+      nutritionScore: signalInput.nutritionScore,
+      checkInScore: signalInput.checkInScore,
+      stepsScore: signalInput.stepsScore,
+      waterScore: signalInput.waterScore,
+      habitScore: signalInput.habitScore,
+      responsivenessScore: signalInput.responsivenessScore
+    }
+  };
+}
+
+function deriveAdherenceSignalInput(state: DemoState, clientId: string) {
+  const client = state.clients.find((item) => item.id === clientId);
+  if (!client) {
+    return {
+      workoutScore: 0,
+      nutritionScore: 0,
+      checkInScore: 0,
+      stepsScore: 0,
+      waterScore: 0,
+      habitScore: 0,
+      responsivenessScore: 0,
+      previousScore: 0
+    };
+  }
+
+  const latestCheckIn = state.checkIns
+    .filter((item) => item.clientId === clientId)
+    .sort((a, b) => b.submittedAt.localeCompare(a.submittedAt))[0];
+  const clientHabits = (state.habits ?? []).filter((habit) => habit.clientId === clientId);
+  const clientHabitIds = new Set(clientHabits.map((habit) => habit.id));
+  const clientCompletions = (state.habitCompletions ?? []).filter((completion) => clientHabitIds.has(completion.habitId));
+  const clientMessages = state.messages.filter((message) => message.clientId === clientId);
+  const plan = state.plans.find((item) => item.clientId === clientId);
+
+  const workoutScoreFromHabits = completionScoreForHabits(
+    clientHabits,
+    clientCompletions,
+    (habit) => /workout|train|session|gym|lift/i.test(habit.title)
+  );
+  const nutritionScoreFromHabits = completionScoreForHabits(
+    clientHabits,
+    clientCompletions,
+    (habit) => /meal|nutrition|protein|calorie|food/i.test(habit.title)
+  );
+  const waterScoreFromHabits = completionScoreForHabits(
+    clientHabits,
+    clientCompletions,
+    (habit) => /water|hydr/i.test(habit.title)
+  );
+
+  const completedHabits = clientCompletions.filter((completion) => completion.completed).length;
+  const habitScore = clientHabits.length > 0
+    ? ratioToScore(completedHabits, Math.max(clientHabits.reduce((sum, habit) => sum + habit.target, 0), clientHabits.length))
+    : 50;
+
+  const workoutScore = workoutScoreFromHabits
+    ?? (plan?.latestVersion.workouts.length ? (latestCheckIn ? 70 : 55) : 0);
+  const nutritionScore = nutritionScoreFromHabits
+    ?? (plan?.latestVersion.nutrition.length ? (latestCheckIn ? 68 : 50) : 0);
+  const checkInScore = !latestCheckIn
+    ? 0
+    : isDateWithinDays(latestCheckIn.submittedAt, 7)
+    ? 100
+    : isDateWithinDays(latestCheckIn.submittedAt, 14)
+    ? 70
+    : isDateWithinDays(latestCheckIn.submittedAt, 21)
+    ? 40
+    : 15;
+  const stepsScore = latestCheckIn
+    ? ratioToScore(latestCheckIn.progress.steps, client.dailyStepsTarget || 10000, 0)
+    : 0;
+  const waterScore = waterScoreFromHabits ?? (latestCheckIn ? 60 : 0);
+  const responsivenessScore = deriveResponsivenessScore(clientMessages);
+  const previousScore = latestCheckIn?.progress.adherenceScore ?? client.adherenceScore ?? 0;
+
+  return {
+    workoutScore,
+    nutritionScore,
+    checkInScore,
+    stepsScore,
+    waterScore,
+    habitScore,
+    responsivenessScore,
+    previousScore
+  };
+}
+
+export function createSeedState(): DemoState {
+  const workspace: CoachWorkspace = {
+    id: "ws_uk_1",
+    name: "Thrive by Jake",
+    brandColor: "#123f2d",
+    accentColor: "#ff8757",
+    heroMessage: "Built for coaches who take their clients' results seriously.",
+    stripeConnected: true,
+    parallelRunDaysLeft: 5
+  };
+
+  const coach: CoachUser = {
+    id: "coach_1",
+    workspaceId: workspace.id,
+    firstName: "Jake",
+    lastName: "Morgan",
+    email: "jake@coachos.demo",
+    gender: "male"
+  };
+
+  const clients: ClientProfile[] = [
+    {
+      id: "client_1",
+      workspaceId: workspace.id,
+      fullName: "Sophie Patel",
+      email: "sophie@example.com",
+      goal: "Lose 8kg while rebuilding training consistency",
+      status: "active",
+      clientGender: "female",
+      weightUnit: "kg",
+      goalWeight: 65,
+      goalTimelineMonths: 5,
+      adherenceScore: 84,
+      adherenceDeltaWeek: 0,
+      currentPlanId: "plan_1",
+      monthlyPriceGbp: 199,
+      nextRenewalDate: "2026-04-10",
+      lastCheckInDate: "2026-04-02",
+      healthConditions: [{ label: "Previous knee injury", note: "Avoid deep squats" }],
+      dailyWaterTarget: 3,
+      dailyStepsTarget: 10000,
+      supplements: ["Vitamin D3", "Whey Protein"],
+      nutritionCalories: 2150,
+      nutritionProteinG: 160,
+      nutritionFatG: 65,
+      nutritionCarbsG: 260,
+      nutritionCoachNote: "Prioritise protein at every meal to support muscle repair."
+    },
+    {
+      id: "client_2",
+      workspaceId: workspace.id,
+      fullName: "Liam Carter",
+      email: "liam@example.com",
+      goal: "Drop body fat for summer while keeping strength",
+      status: "paused",
+      clientGender: "male",
+      weightUnit: "kg",
+      goalWeight: 86,
+      goalTimelineMonths: 4,
+      adherenceScore: 42,
+      adherenceDeltaWeek: 0,
+      currentPlanId: "plan_2",
+      monthlyPriceGbp: 149,
+      nextRenewalDate: "2026-04-05",
+      lastCheckInDate: "2026-03-29",
+      healthConditions: [{ label: "Lower back stiffness", note: "Avoid deadlifts until cleared" }],
+      dailyWaterTarget: 3,
+      dailyStepsTarget: 8000,
+      supplements: ["Creatine", "Omega-3"],
+      nutritionCalories: 2400,
+      nutritionProteinG: 200,
+      nutritionFatG: 80,
+      nutritionCarbsG: 240,
+      nutritionCoachNote: "Keep carbs around workouts only to support fat loss."
+    },
+    {
+      id: "client_3",
+      workspaceId: workspace.id,
+      fullName: "Ava Thompson",
+      email: "ava@example.com",
+      goal: "Return to training after pregnancy with low-pressure routines",
+      status: "lead",
+      clientGender: "female",
+      weightUnit: "kg",
+      goalWeight: 68,
+      goalTimelineMonths: 6,
+      adherenceScore: 71,
+      adherenceDeltaWeek: 0,
+      currentPlanId: null,
+      monthlyPriceGbp: 129,
+      nextRenewalDate: "2026-04-18",
+      lastCheckInDate: null,
+      healthConditions: [{ label: "Post-pregnancy", note: "Clearance needed for core-heavy work" }],
+      dailyWaterTarget: 2,
+      dailyStepsTarget: 6000,
+      supplements: ["Prenatal Multivitamin", "Iron"],
+      nutritionCalories: 2000,
+      nutritionProteinG: 90,
+      nutritionFatG: 65,
+      nutritionCarbsG: 250,
+      nutritionCoachNote: "Focus on nutrient-dense whole foods. No calorie deficit yet."
+    }
+  ];
+
+  const plans: ProgramPlan[] = [
+    {
+      id: "plan_1",
+      clientId: "client_1",
+      coachId: coach.id,
+      title: "Sophie Fat Loss Reset",
+      latestVersion: {
+        id: "plan_1_v2",
+        planId: "plan_1",
+        versionNumber: 2,
+        status: "approved",
+        explanation: [
+          "Training volume stayed high because Sophie hit 5 of 6 sessions last week.",
+          "Calories remain moderate deficit after energy score improved to 7/10."
+        ],
+        workouts: [
+          "3 gym sessions focused on lower-body strength and upper-body pull volume",
+          "2 incline-walk cardio blocks at 25 minutes",
+          "Daily step target: 9,000"
+        ],
+        nutrition: [
+          "Calories: 1,850 per day",
+          "Protein: 135g minimum",
+          "Weekend meal out: 1 flexible meal, no calorie banking"
+        ],
+        updatedAt: "2026-04-02T08:00:00.000Z"
+      }
+    },
+    {
+      id: "plan_2",
+      clientId: "client_2",
+      coachId: coach.id,
+      title: "Liam Compliance Rescue",
+      latestVersion: {
+        id: "plan_2_v1",
+        planId: "plan_2",
+        versionNumber: 1,
+        status: "draft",
+        explanation: [
+          "Risk score is high because Liam missed 2 check-ins and logged low energy.",
+          "The draft lowers complexity to rebuild adherence before pushing intensity."
+        ],
+        workouts: [
+          "2 full-body sessions instead of 4 split sessions",
+          "10-minute daily walk after lunch",
+          "1 optional weekend conditioning block"
+        ],
+        nutrition: [
+          "Calories: 2,100 per day",
+          "Protein: 160g minimum",
+          "Replace two takeaway lunches with prepared wraps"
+        ],
+        updatedAt: "2026-04-03T07:45:00.000Z"
+      }
+    }
+  ];
+
+  const checkIns: CheckIn[] = [
+    {
+      id: "checkin_1",
+      clientId: "client_1",
+      submittedAt: "2026-04-02T07:30:00.000Z",
+      progress: {
+        weightKg: 73.4,
+        energyScore: 7,
+        steps: 10220,
+        waistCm: 78,
+        adherenceScore: 86,
+        notes: "Felt good all week and hit every session."
+      },
+      photoCount: 2
+    },
+    {
+      id: "checkin_2",
+      clientId: "client_2",
+      submittedAt: "2026-03-29T08:00:00.000Z",
+      progress: {
+        weightKg: 92.1,
+        energyScore: 4,
+        steps: 4100,
+        waistCm: null,
+        adherenceScore: 38,
+        notes: "Travel week. Missed sessions and meals were messy."
+      },
+      photoCount: 0
+    }
+  ];
+
+  const subscriptions: PaymentSubscription[] = clients.map((client) => ({
+    id: `sub_${client.id}`,
+    clientId: client.id,
+    status: client.id === "client_2" ? "past_due" : client.status === "lead" ? "trialing" : "active",
+    amountGbp: client.monthlyPriceGbp,
+    renewalDate: client.nextRenewalDate
+  }));
+
+  return {
+    workspace,
+    coach,
+    clients,
+    plans,
+    checkIns,
+    subscriptions,
+    groupPrograms: [],
+    nutritionSwaps: [],
+    habits: [
+      { id: "habit_1", clientId: "client_1", title: "Log meals in the app", target: 1, frequency: "daily", createdAt: "2026-04-01T00:00:00.000Z" },
+      { id: "habit_2", clientId: "client_1", title: "Hit 8,000 steps", target: 8000, frequency: "daily", createdAt: "2026-04-01T00:00:00.000Z" },
+      { id: "habit_3", clientId: "client_1", title: "Complete weekly check-in", target: 1, frequency: "weekly", createdAt: "2026-04-01T00:00:00.000Z" },
+      { id: "habit_4", clientId: "client_2", title: "Log meals in the app", target: 1, frequency: "daily", createdAt: "2026-04-01T00:00:00.000Z" },
+      { id: "habit_5", clientId: "client_2", title: "Hit 5,000 steps", target: 5000, frequency: "daily", createdAt: "2026-04-01T00:00:00.000Z" },
+      { id: "habit_6", clientId: "client_2", title: "Submit check-in on Friday", target: 1, frequency: "weekly", createdAt: "2026-04-01T00:00:00.000Z" },
+      { id: "habit_7", clientId: "client_3", title: "Log meals in the app", target: 1, frequency: "daily", createdAt: "2026-04-01T00:00:00.000Z" },
+      { id: "habit_8", clientId: "client_3", title: "Complete a workout", target: 3, frequency: "weekly", createdAt: "2026-04-01T00:00:00.000Z" },
+    ],
+    habitCompletions: [
+      // client_1 — mostly complete
+      { id: "hc_1", habitId: "habit_1", date: "2026-04-01", completed: true },
+      { id: "hc_2", habitId: "habit_2", date: "2026-04-01", completed: true },
+      { id: "hc_3", habitId: "habit_1", date: "2026-04-02", completed: true },
+      { id: "hc_4", habitId: "habit_2", date: "2026-04-02", completed: true },
+      { id: "hc_5", habitId: "habit_1", date: "2026-04-03", completed: true },
+      { id: "hc_6", habitId: "habit_2", date: "2026-04-03", completed: false },
+      // client_2 — struggling
+      { id: "hc_7", habitId: "habit_4", date: "2026-04-01", completed: false },
+      { id: "hc_8", habitId: "habit_5", date: "2026-04-01", completed: true },
+    ],
+    messages: [
+      {
+        id: "msg_1",
+        clientId: "client_1",
+        coachId: coach.id,
+        sender: "coach",
+        content: "Hey Sophie, let's crush the nutrition goals this week!",
+        sentAt: "2026-04-03T08:00:00.000Z",
+        readAt: "2026-04-03T08:30:00.000Z"
+      },
+      {
+        id: "msg_2",
+        clientId: "client_1",
+        coachId: coach.id,
+        sender: "client",
+        content: "On it! Just prepared my meals.",
+        sentAt: "2026-04-03T08:45:00.000Z",
+        readAt: "2026-04-03T09:00:00.000Z"
+      }
+    ],
+    analytics: [
+      {
+        name: "coach_onboarded",
+        actorId: coach.id,
+        occurredAt: today.toISOString(),
+        metadata: { workspace: workspace.name }
+      }
+    ]
+  };
+}
+
+export function scoreClientRisk(client: ClientProfile, checkIn?: CheckIn, subscription?: PaymentSubscription): RiskAlert | null {
+  const reasons: string[] = [];
+
+  if (!client.lastCheckInDate) {
+    reasons.push("No client check-in received yet");
+  } else {
+    const daysSinceCheckIn = Math.floor(
+      (today.getTime() - new Date(client.lastCheckInDate).getTime()) / (1000 * 60 * 60 * 24)
+    );
+    if (daysSinceCheckIn >= 5) {
+      reasons.push(`${daysSinceCheckIn} days since the last check-in`);
+    }
+  }
+
+  if (client.adherenceScore < 50) {
+    reasons.push(`Adherence score down to ${client.adherenceScore}%`);
+  }
+
+  if (checkIn && checkIn.progress.energyScore <= 4) {
+    reasons.push(`Energy dropped to ${checkIn.progress.energyScore}/10`);
+  }
+
+  if (subscription?.status === "past_due") {
+    reasons.push("Subscription payment needs attention");
+  }
+
+  if (!reasons.length) {
+    return null;
+  }
+
+  return {
+    clientId: client.id,
+    severity: reasons.length >= 3 ? "high" : reasons.length === 2 ? "medium" : "low",
+    reasons,
+    recommendedAction:
+      reasons.some((reason) => reason.includes("payment"))
+        ? "Send a recovery message and trigger dunning follow-up."
+        : "Send a one-tap encouragement nudge and simplify next week’s plan."
+  };
+}
+
+export function summarizeMorningDashboard(state: DemoState) {
+  const riskAlerts = state.clients
+    .map((client) =>
+      scoreClientRisk(
+        client,
+        state.checkIns.find((checkIn) => checkIn.clientId === client.id),
+        state.subscriptions.find((subscription) => subscription.clientId === client.id)
+      )
+    )
+    .filter((alert): alert is RiskAlert => Boolean(alert));
+
+  return {
+    date: today.toISOString(),
+    activeClients: state.clients.filter((client) => client.status === "active").length,
+    checkedInToday: state.checkIns.filter((checkIn) => checkIn.submittedAt.slice(0, 10) === "2026-04-03").length,
+    dueRenewals: state.subscriptions.filter((subscription) => new Date(subscription.renewalDate) <= new Date("2026-04-10")).length,
+    atRiskClients: riskAlerts,
+    revenueSnapshotGbp: state.subscriptions
+      .filter((subscription) => subscription.status === "active")
+      .reduce((total, subscription) => total + subscription.amountGbp, 0)
+  };
+}
+
+export function previewImport(rows: ImportRow[]) {
+  const parsed = rows.map((row, index) => {
+    const result = importRowSchema.safeParse(row);
+    return {
+      row: index + 1,
+      success: result.success,
+      data: result.success ? result.data : null,
+      issues: result.success ? [] : result.error.issues.map((issue) => issue.message)
+    };
+  });
+
+  return {
+    validRows: parsed.filter((row) => row.success).length,
+    invalidRows: parsed.filter((row) => !row.success).length,
+    parsed
+  };
+}
+
+export function createDraftPlan(client: ClientProfile, coachId: string): ProgramPlan {
+  const riskLevel = client.adherenceScore < 50 ? "recovery" : "growth";
+  const workouts =
+    riskLevel === "recovery"
+      ? [
+          "2 simplified full-body sessions with 5 exercises each",
+          "Daily 8,000-step target",
+          "1 mobility recovery block on Sunday"
+        ]
+      : [
+          "3 progressive overload strength sessions",
+          "2 zone-2 cardio blocks",
+          "Daily 9,000-step target"
+        ];
+
+  const nutrition =
+    riskLevel === "recovery"
+      ? [
+          "Use a repeatable breakfast and lunch template for five days",
+          "Protein floor: 150g",
+          "One coached meal prep block each Sunday"
+        ]
+      : [
+          "Moderate calorie deficit aligned to fat-loss phase",
+          "Protein floor: 135g",
+          "One flexible meal each weekend with no rebound restriction"
+        ];
+
+  return {
+    id: `plan_${client.id}`,
+    clientId: client.id,
+    coachId,
+    title: `${client.fullName.split(" ")[0]} Momentum Plan`,
+    latestVersion: {
+      id: `plan_${client.id}_v1`,
+      planId: `plan_${client.id}`,
+      versionNumber: 1,
+      status: "draft",
+      explanation: [
+        `Draft built for ${client.goal.toLowerCase()}.`,
+        riskLevel === "recovery"
+          ? "Plan complexity reduced because adherence and/or check-ins have dropped."
+          : "Plan keeps momentum high because the client is showing consistent adherence."
+      ],
+      workouts,
+      nutrition,
+      updatedAt: today.toISOString()
+    }
+  };
+}
+
+export function approvePlan(plan: ProgramPlan): ProgramPlan {
+  return {
+    ...plan,
+    latestVersion: {
+      ...plan.latestVersion,
+      status: "approved",
+      versionNumber: plan.latestVersion.versionNumber + 1,
+      id: `${plan.id}_v${plan.latestVersion.versionNumber + 1}`,
+      updatedAt: today.toISOString()
+    }
+  };
+}
+
+export function createProofCard(client: ClientProfile, latestCheckIn?: CheckIn): ProofCard {
+  return {
+    clientId: client.id,
+    headline: `${client.fullName.split(" ")[0]} is rebuilding consistency with premium accountability`,
+    body: latestCheckIn
+      ? `Energy is ${latestCheckIn.progress.energyScore}/10, steps reached ${latestCheckIn.progress.steps.toLocaleString()}, and the coach now has a clean progress trail ready for sharing.`
+      : "Client has been onboarded and is ready for the first measurable proof milestone.",
+    stats: [
+      { label: "Adherence", value: `${client.adherenceScore}%` },
+      { label: "Monthly value", value: `£${client.monthlyPriceGbp}` },
+      { label: "Next review", value: client.nextRenewalDate }
+    ]
+  };
+}
+
+export function validateAnalyticsEvent(event: AnalyticsEvent) {
+  return analyticsEventSchema.parse(event);
+}

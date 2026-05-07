@@ -1,0 +1,79 @@
+{
+  "workspace": {
+    "id": "ws_1778099400181",
+    "name": "Thrive by Jake",
+    "brandColor": "#123f2d",
+    "accentColor": "#ff8757",
+    "heroMessage": "Built for coaches who take their clients' results seriously.",
+    "stripeConnected": false,
+    "parallelRunDaysLeft": 14
+  },
+  "coach": {
+    "id": "coach_1778099400181",
+    "workspaceId": "ws_1778099400181",
+    "firstName": "ranesh",
+    "lastName": "Sharma",
+    "email": "jake@coachos.demo",
+    "gender": "male"
+  },
+  "clients": [
+    {
+      "workspaceId": "ws_1778099400181",
+      "fullName": "Ranesh Sharma",
+      "email": "raneshh.sharma@gmail.com",
+      "goal": "ranesh",
+      "status": "trial",
+      "adherenceScore": 60,
+      "currentPlanId": null,
+      "monthlyPriceGbp": 555,
+      "nextRenewalDate": "2026-12-12",
+      "lastCheckInDate": null,
+      "healthConditions": [],
+      "dailyWaterTarget": 3,
+      "dailyStepsTarget": 10000,
+      "supplements": [],
+      "nutritionCalories": null,
+      "nutritionProteinG": null,
+      "nutritionFatG": null,
+      "nutritionCarbsG": null,
+      "nutritionCoachNote": "",
+      "id": "client_1778099439761_odz2g"
+    }
+  ],
+  "plans": [],
+  "checkIns": [],
+  "subscriptions": [
+    {
+      "id": "sub_client_1778099439761_odz2g",
+      "clientId": "client_1778099439761_odz2g",
+      "status": "trialing",
+      "amountGbp": 555,
+      "renewalDate": "2026-12-12"
+    }
+  ],
+  "messages": [],
+  "analytics": [
+    {
+      "name": "coach_onboarded",
+      "actorId": "coach_1778099400181",
+      "occurredAt": "2026-05-06T20:30:00.181Z",
+      "metadata": {
+        "workspaceId": "ws_1778099400181",
+        "coachTypeCount": 0,
+        "freshWorkspace": true
+      }
+    },
+    {
+      "name": "coach_onboarded",
+      "actorId": "coach_1778099400181",
+      "occurredAt": "2026-05-06T20:30:39.763Z",
+      "metadata": {
+        "clientCreated": "client_1778099439761_odz2g"
+      }
+    }
+  ],
+  "groupPrograms": [],
+  "nutritionSwaps": [],
+  "habits": [],
+  "habitCompletions": []
+}
