@@ -171,8 +171,7 @@ function createPlannerTargets(client: ClientProfile | null | undefined): Planner
 /* ────────────────────────────────────────
    API HELPERS
 ──────────────────────────────────────── */
-const isProd = import.meta.env.PROD;
-const apiBase = isProd ? "/api" : "http://localhost:8000/api";
+const apiBase = "/api";
 const coachIdStorageKey = "coachos_coach_id";
 const authTokenStorageKey = "coachos_auth_token";
 
@@ -485,8 +484,7 @@ function LoginScreen({ onLogin }: { onLogin: (token: string, coachId: string) =>
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [showPw, setShowPw] = useState(false);
-  const isProd = import.meta.env.PROD;
-  const base = isProd ? "/api" : "http://localhost:8000/api";
+  const base = "/api";
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
