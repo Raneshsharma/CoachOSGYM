@@ -6067,7 +6067,20 @@ function App() {
 
   useEffect(() => {
     if (!authToken) return;
-    loadCoach().catch(err => setLoadError(err instanceof Error ? err.message : "Connection failed — is the API running?"));
+    loadCoach().catch(err => {
+      const msg = err instanceof Error ? err.message : "Connection failed — is the API running?";
+      if (msg.includes("401")) {
+        try {
+          localStorage.removeItem(authTokenStorageKey);
+          localStorage.removeItem(coachIdStorageKey);
+          localStorage.removeItem("coachos_onboarded");
+        } catch { /* ignore */ }
+        setAuthToken(null);
+        setSession(null);
+      } else {
+        setLoadError(msg);
+      }
+    });
   }, [authToken]);
 
   useEffect(() => {
