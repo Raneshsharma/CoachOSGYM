@@ -1911,7 +1911,7 @@ function PortalView({ session, clientPortal, selectedClientId, onSwitchClient, o
   const [macroTargets, setMacroTargets] = useState<PlannerTarget[]>(() => createPlannerTargets(clientPortal?.client));
   const [lastSavedAt, setLastSavedAt] = useState<Date>(new Date());
   const [sentMealPlan, setSentMealPlan] = useState(false);
-  const [chatMessages, setChatMessages] = useState<Record<string, AIChatMessage[]>>({});
+  const [chatMessages, setChatMessages] = useState<AIChatMessage[]>([]);
   const [portalNotes, setPortalNotes] = useState<ClientNote[]>([]);
   const [portalNewNote, setPortalNewNote] = useState("");
   const [portalNoteSaving, setPortalNoteSaving] = useState(false);
@@ -1979,6 +1979,7 @@ function PortalView({ session, clientPortal, selectedClientId, onSwitchClient, o
     setSentMealPlan(false);
     setPortalNewNote("");
     setPortalSummaryEdit({ weight: false, energy: false });
+    setChatMessages([]);
   }, [clientPortal?.client.id]);
 
   useEffect(() => {
@@ -2388,8 +2389,8 @@ function PortalView({ session, clientPortal, selectedClientId, onSwitchClient, o
             <AINutritionChat
               clientProfile={clientPortal.client}
               mealWeek={mealWeek}
-              messages={chatMessages[clientPortal.client.id] ?? []}
-              onMessagesChange={(msgs) => setChatMessages(prev => ({ ...prev, [clientPortal.client.id]: msgs }))}
+              messages={chatMessages}
+              onMessagesChange={setChatMessages}
             />
           )}
 

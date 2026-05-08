@@ -541,6 +541,19 @@ export function createApp(store: DemoStore) {
       return;
     }
 
+    const VALID_ROLES = new Set(["user", "assistant"]);
+    const sanitisedMessages = (messages as unknown[]).filter(
+      (m): m is { role: "user" | "assistant"; content: string } =>
+        typeof m === "object" && m !== null &&
+        "role" in m && "content" in m &&
+        VALID_ROLES.has((m as Record<string, unknown>).role as string) &&
+        typeof (m as Record<string, unknown>).content === "string"
+    );
+    if (sanitisedMessages.length !== messages.length) {
+      res.status(400).json({ message: "Each message must have a valid role (user|assistant) and string content." });
+      return;
+    }
+
     const systemPrompt = buildNutritionSystemPrompt(
       clientProfile as Record<string, unknown>,
       Array.isArray(mealWeek) ? mealWeek as Array<{ name: string; meals: Array<{ slot: string; name: string; cal: number; protein: number }> }> : undefined
@@ -552,7 +565,7 @@ export function createApp(store: DemoStore) {
         model: "gpt-4o-mini",
         messages: [
           { role: "system", content: systemPrompt },
-          ...messages as { role: "user" | "assistant"; content: string }[],
+          ...sanitisedMessages,
         ],
         max_tokens: 1200,
         temperature: 0.7,
