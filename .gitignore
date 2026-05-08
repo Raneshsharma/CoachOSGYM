@@ -26,6 +26,8 @@ firebase-debug.*.log
 .env.production
 .env.staging
 # Only .env.example is committed (it has no real values)
+# Cloudflare Workers local dev secrets — never commit
+.dev.vars
 
 # ─── Test coverage ──────────────────────────────
 coverage/
