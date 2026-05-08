@@ -172,6 +172,7 @@ function createPlannerTargets(client: ClientProfile | null | undefined): Planner
    API HELPERS
 ──────────────────────────────────────── */
 import { fetchJson, apiBase, coachIdStorageKey, authTokenStorageKey } from "./lib/api";
+import { LandingPage } from "./LandingPage";
 
 /* ────────────────────────────────────────
    TOAST HOOK
@@ -448,8 +449,8 @@ function ToastContainer({
 /* ────────────────────
    LOGIN SCREEN
 ────────────────────── */
-function LoginScreen({ onLogin }: { onLogin: (token: string, coachId: string) => void }) {
-  const [tab, setTab] = useState<"login" | "register">("login");
+function LoginScreen({ onLogin, onBack, defaultTab = "login" }: { onLogin: (token: string, coachId: string) => void; onBack?: () => void; defaultTab?: "login" | "register" }) {
+  const [tab, setTab] = useState<"login" | "register">(defaultTab);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [firstName, setFirstName] = useState("");
@@ -515,6 +516,15 @@ function LoginScreen({ onLogin }: { onLogin: (token: string, coachId: string) =>
             fontFamily: "Inter, sans-serif", fontSize: "0.8rem",
             color: "rgba(255,255,255,0.55)", margin: 0
           }}>The all-in-one platform for online fitness coaches</p>
+          {onBack && (
+            <button onClick={onBack} style={{
+              position: "absolute", top: "1rem", left: "1rem",
+              background: "rgba(255,255,255,0.15)", border: "none", borderRadius: "8px",
+              color: "rgba(255,255,255,0.7)", cursor: "pointer", padding: "0.35rem 0.75rem",
+              fontFamily: "Inter, sans-serif", fontSize: "0.78rem", fontWeight: 600,
+              display: "flex", alignItems: "center", gap: "0.3rem", transition: "background 0.15s"
+            }}>&#8592; Home</button>
+          )}
         </div>
 
         <div style={{ padding: "0 2rem", borderBottom: "1px solid var(--outline-variant)", display: "flex" }}>
@@ -5949,6 +5959,8 @@ function applyWorkspaceTheme(workspace: Pick<CoachWorkspace, "brandColor" | "acc
 }
 
 function App() {
+  const [showAuth, setShowAuth] = useState(false);
+  const [authTab, setAuthTab] = useState<"login" | "register">("login");
   const [authToken, setAuthToken] = useState<string | null>(() => {
     try { return localStorage.getItem(authTokenStorageKey); }
     catch { return null; }
@@ -6255,7 +6267,15 @@ function App() {
 
   // Auth guard
   if (!authToken) {
-    return <LoginScreen onLogin={handleLogin} />;
+    if (!showAuth) {
+      return (
+        <LandingPage
+          onSignIn={() => { setAuthTab("login"); setShowAuth(true); }}
+          onGetStarted={() => { setAuthTab("register"); setShowAuth(true); }}
+        />
+      );
+    }
+    return <LoginScreen onLogin={handleLogin} onBack={() => setShowAuth(false)} defaultTab={authTab} />;
   }
 
   // Loading & error states
