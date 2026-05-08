@@ -725,7 +725,7 @@ function LiveDashboard() {
   const [aiText, setAiText] = useState("");
   const [aiDone, setAiDone] = useState(false);
   const [statVals, setStatVals] = useState({ clients: 24, revenue: 4120, checkins: 18 });
-  const timerRef = useRef<ReturnType<typeof setInterval>>();
+  const timerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
   const switchView = useCallback((v: DashView) => {
     setPrev(view);

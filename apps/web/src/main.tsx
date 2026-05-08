@@ -54,10 +54,16 @@ type Recipe = { id: string; name: string; ingredients: string[]; steps: string[]
 type PlannerMeal = {
   slot: string;
   name: string;
+  timing: string;
   cal: number;
   protein: number;
   carbs: number;
   fat: number;
+  ingredients: string[];
+  steps: string[];
+  oilInstruction: string;
+  portion: string;
+  servings: string;
   note: string;
   optional?: boolean;
 };
@@ -82,19 +88,19 @@ function createPlannerWeek(): PlannerWeekDay[] {
     {
       name: "Mon",
       meals: [
-        { slot: "Breakfast", name: "Greek Yogurt with Berries", cal: 320, protein: 24, carbs: 35, fat: 8, note: "High protein breakfast with antioxidant-rich berries. Use Greek yogurt for extra thickness." },
-        { slot: "Lunch", name: "Grilled Chicken Salad", cal: 450, protein: 45, carbs: 28, fat: 15, note: "Lean protein with mixed greens and olive oil dressing." },
-        { slot: "Snacks", name: "-", cal: 0, protein: 0, carbs: 0, fat: 0, note: "" },
-        { slot: "Dinner", name: "-", cal: 0, protein: 0, carbs: 0, fat: 0, note: "" },
+        { slot: "Breakfast", name: "Greek Yogurt with Berries", timing: "7:30 AM", cal: 320, protein: 24, carbs: 35, fat: 8, ingredients: ["200g Greek yogurt", "60g mixed berries", "15g granola"], steps: ["Spoon yogurt into bowl", "Top with mixed berries", "Sprinkle granola to finish"], oilInstruction: "No oil required", portion: "1 bowl", servings: "1 serving", note: "High protein breakfast with antioxidant-rich berries. Use Greek yogurt for extra thickness." },
+        { slot: "Lunch", name: "Grilled Chicken Salad", timing: "1:00 PM", cal: 450, protein: 45, carbs: 28, fat: 15, ingredients: ["180g chicken breast", "80g mixed greens", "60g cherry tomatoes", "1 tsp olive oil"], steps: ["Season chicken with salt and pepper", "Grill 6–7 min each side", "Toss greens and dress lightly"], oilInstruction: "Use 1 tsp olive oil for dressing", portion: "1 large bowl", servings: "1 serving", note: "Lean protein with mixed greens and olive oil dressing." },
+        { slot: "Snacks", name: "-", timing: "", cal: 0, protein: 0, carbs: 0, fat: 0, ingredients: [], steps: [], oilInstruction: "", portion: "", servings: "", note: "" },
+        { slot: "Dinner", name: "-", timing: "", cal: 0, protein: 0, carbs: 0, fat: 0, ingredients: [], steps: [], oilInstruction: "", portion: "", servings: "", note: "" },
       ],
     },
     ...["Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day) => ({
       name: day,
       meals: [
-        { slot: "Breakfast", name: "-", cal: 0, protein: 0, carbs: 0, fat: 0, note: "" },
-        { slot: "Lunch", name: "-", cal: 0, protein: 0, carbs: 0, fat: 0, note: "" },
-        { slot: "Snacks", name: "-", cal: 0, protein: 0, carbs: 0, fat: 0, note: "" },
-        { slot: "Dinner", name: "-", cal: 0, protein: 0, carbs: 0, fat: 0, note: "" },
+        { slot: "Breakfast", name: "-", timing: "", cal: 0, protein: 0, carbs: 0, fat: 0, ingredients: [], steps: [], oilInstruction: "", portion: "", servings: "", note: "" },
+        { slot: "Lunch", name: "-", timing: "", cal: 0, protein: 0, carbs: 0, fat: 0, ingredients: [], steps: [], oilInstruction: "", portion: "", servings: "", note: "" },
+        { slot: "Snacks", name: "-", timing: "", cal: 0, protein: 0, carbs: 0, fat: 0, ingredients: [], steps: [], oilInstruction: "", portion: "", servings: "", note: "" },
+        { slot: "Dinner", name: "-", timing: "", cal: 0, protein: 0, carbs: 0, fat: 0, ingredients: [], steps: [], oilInstruction: "", portion: "", servings: "", note: "" },
       ],
     })),
   ];

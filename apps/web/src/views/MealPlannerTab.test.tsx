@@ -3,23 +3,39 @@ import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MealPlannerTab, resolveMealPlanSend } from "./MealPlannerTab";
 
+const emptyMealObj = (slot: string) => ({
+  slot,
+  name: "-",
+  timing: "",
+  cal: 0,
+  protein: 0,
+  carbs: 0,
+  fat: 0,
+  ingredients: [] as string[],
+  steps: [] as string[],
+  oilInstruction: "",
+  portion: "",
+  servings: "",
+  note: "",
+});
+
 const fullWeek = [
   {
     name: "Mon",
     meals: [
-      { slot: "Breakfast", name: "-", cal: 0, protein: 0, carbs: 0, fat: 0, note: "" },
-      { slot: "Lunch", name: "-", cal: 0, protein: 0, carbs: 0, fat: 0, note: "" },
-      { slot: "Snacks", name: "-", cal: 0, protein: 0, carbs: 0, fat: 0, note: "" },
-      { slot: "Dinner", name: "-", cal: 0, protein: 0, carbs: 0, fat: 0, note: "" },
+      emptyMealObj("Breakfast"),
+      emptyMealObj("Lunch"),
+      emptyMealObj("Snacks"),
+      emptyMealObj("Dinner"),
     ],
   },
   ...["Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day) => ({
     name: day,
     meals: [
-      { slot: "Breakfast", name: "-", cal: 0, protein: 0, carbs: 0, fat: 0, note: "" },
-      { slot: "Lunch", name: "-", cal: 0, protein: 0, carbs: 0, fat: 0, note: "" },
-      { slot: "Snacks", name: "-", cal: 0, protein: 0, carbs: 0, fat: 0, note: "" },
-      { slot: "Dinner", name: "-", cal: 0, protein: 0, carbs: 0, fat: 0, note: "" },
+      emptyMealObj("Breakfast"),
+      emptyMealObj("Lunch"),
+      emptyMealObj("Snacks"),
+      emptyMealObj("Dinner"),
     ],
   })),
 ];

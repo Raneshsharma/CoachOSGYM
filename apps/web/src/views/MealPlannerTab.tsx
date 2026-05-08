@@ -1,4 +1,4 @@
-﻿import React, { ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import React, { ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import {
   Apple,
   GripVertical,
@@ -15,10 +15,16 @@ import {
 interface Meal {
   slot: string;
   name: string;
+  timing: string;
   cal: number;
   protein: number;
   carbs: number;
   fat: number;
+  ingredients: string[];
+  steps: string[];
+  oilInstruction: string;
+  portion: string;
+  servings: string;
   note: string;
   optional?: boolean;
 }
@@ -47,7 +53,22 @@ interface MealPlannerTabProps {
 }
 
 function emptyMeal(slot: string, optional = false): Meal {
-  return { slot, name: "-", cal: 0, protein: 0, carbs: 0, fat: 0, note: "", optional };
+  return {
+    slot,
+    name: "-",
+    timing: "",
+    cal: 0,
+    protein: 0,
+    carbs: 0,
+    fat: 0,
+    ingredients: [],
+    steps: [],
+    oilInstruction: "",
+    portion: "",
+    servings: "",
+    note: "",
+    optional,
+  };
 }
 
 function getSlotIcon(slot: string): ReactNode {
@@ -62,6 +83,10 @@ function statusClass(filledMeals: number, delta: number) {
   if (filledMeals === 0) return "meal-week-card--warn";
   if (Math.abs(delta) <= 150 && filledMeals >= 2) return "meal-week-card--good";
   return "meal-week-card--partial";
+}
+
+function splitLines(value: string): string[] {
+  return value.split("\n").map((item) => item.trim()).filter(Boolean);
 }
 
 export async function resolveMealPlanSend(onSendPlan: () => Promise<boolean>) {
@@ -84,6 +109,7 @@ export function MealPlannerTab({
   const [previewMode, setPreviewMode] = useState(false);
   const [sentPlan, setSentPlan] = useState(false);
   const [swapTarget, setSwapTarget] = useState<{ day: string; slot: string } | null>(null);
+  const [editingSlot, setEditingSlot] = useState<string | null>(null);
   const [showMacroSetup, setShowMacroSetup] = useState(false);
   const [macroDraft, setMacroDraft] = useState<DailyTarget[]>(initialTargets);
   const [expandedNotes, setExpandedNotes] = useState<Record<string, boolean>>({});
@@ -167,24 +193,40 @@ export function MealPlannerTab({
 
   const locked = previewMode || sentPlan;
 
+  const editingMeal = editingSlot
+    ? selected.meals.find((meal) => meal.slot === editingSlot) ?? null
+    : null;
+
   const generateDay = useCallback(() => {
     const generatedMeals: Meal[] = [
       {
         slot: "Breakfast",
         name: "Greek Yogurt with Berries",
+        timing: "7:30 AM",
         cal: 320,
         protein: 24,
         carbs: 35,
         fat: 8,
+        ingredients: ["200g Greek yogurt", "60g mixed berries", "15g granola"],
+        steps: ["Spoon yogurt into bowl", "Top with mixed berries", "Sprinkle granola to finish"],
+        oilInstruction: "No oil required",
+        portion: "1 bowl",
+        servings: "1 serving",
         note: "High protein breakfast with antioxidant-rich berries. Use Greek yogurt for extra thickness.",
       },
       {
         slot: "Lunch",
         name: "Grilled Chicken Salad",
+        timing: "1:00 PM",
         cal: 450,
         protein: 45,
         carbs: 28,
         fat: 15,
+        ingredients: ["180g chicken breast", "80g mixed greens", "60g cherry tomatoes", "1 tsp olive oil", "Lemon juice"],
+        steps: ["Season chicken with salt and pepper", "Grill 6–7 min each side until cooked through", "Toss greens and tomatoes, dress lightly with oil and lemon"],
+        oilInstruction: "Use 1 tsp olive oil for dressing",
+        portion: "1 large bowl",
+        servings: "1 serving",
         note: "Lean protein with mixed greens and olive oil dressing.",
       },
       emptyMeal("Snacks"),
@@ -238,6 +280,7 @@ export function MealPlannerTab({
       ...day,
       meals: day.meals.map((meal) => meal.optional ? emptyMeal(meal.slot, true) : emptyMeal(meal.slot)),
     } : day));
+    setEditingSlot(null);
     pushToast(`${selected.name} cleared.`, "info");
   }, [pushToast, selected.name, updateWeek, week]);
 
@@ -279,7 +322,8 @@ export function MealPlannerTab({
       ...day,
       meals: day.meals.map((meal) => meal.slot === slot ? emptyMeal(slot, meal.optional) : meal),
     } : day));
-  }, [selected.name, updateWeek, week]);
+    if (editingSlot === slot) setEditingSlot(null);
+  }, [editingSlot, selected.name, updateWeek, week]);
 
   const toggleBulkDay = useCallback((dayName: string) => {
     setBulkDays((current) => current.includes(dayName) ? current.filter((item) => item !== dayName) : [...current, dayName]);
@@ -292,6 +336,13 @@ export function MealPlannerTab({
   const addEmptySlot = useCallback((slot: string) => {
     pushToast(`${slot} can be populated from your recipe browser next.`, "info");
   }, [pushToast]);
+
+  const updateMeal = useCallback((slot: string, patch: Partial<Meal>) => {
+    updateWeek(week.map((day) => day.name === selected.name ? {
+      ...day,
+      meals: day.meals.map((meal) => meal.slot === slot ? { ...meal, ...patch } : meal),
+    } : day));
+  }, [selected.name, updateWeek, week]);
 
   const macroPercent = (actual: number, target: number) => {
     if (!target) return 0;
@@ -324,6 +375,7 @@ export function MealPlannerTab({
             className={`meal-week-card ${day.name === selected.name ? "meal-week-card--active" : ""} ${statusClass(day.filledMeals, day.delta)} ${bulkDays.includes(day.name) ? "meal-week-card--selected-bulk" : ""}`}
             onClick={() => {
               setSelectedDay(day.name);
+              setEditingSlot(null);
               if (bulkMode) toggleBulkDay(day.name);
             }}
           >
@@ -359,8 +411,12 @@ export function MealPlannerTab({
               const noteKey = `${selected.name}-${meal.slot}`;
               const expanded = expandedNotes[noteKey] ?? false;
               const truncated = meal.note.length > 88 && !expanded ? `${meal.note.slice(0, 88)}...` : meal.note;
+              const isEditing = editingSlot === meal.slot;
               return (
-                <article key={meal.slot} className="meal-detail-card meal-detail-card--filled">
+                <article
+                  key={meal.slot}
+                  className={`meal-detail-card meal-detail-card--filled${isEditing ? " meal-detail-card--editing" : ""}`}
+                >
                   <div className="meal-detail-grip">
                     <GripVertical size={14} strokeWidth={2.25} />
                   </div>
@@ -368,6 +424,7 @@ export function MealPlannerTab({
                     <div className="meal-detail-slot">
                       <span className="meal-slot-icon">{getSlotIcon(meal.slot)}</span>
                       <em>{meal.slot}</em>
+                      {meal.timing ? <span className="meal-timing-badge">{meal.timing}</span> : null}
                     </div>
                     <h4>{meal.name}</h4>
                     <p>{meal.cal} kcal · {meal.protein}g P · {meal.carbs}g C · {meal.fat}g F</p>
@@ -379,9 +436,20 @@ export function MealPlannerTab({
                         </button>
                       ) : null}
                     </small>
+                    {meal.ingredients.length > 0 && !isEditing ? (
+                      <div className="meal-card-pills">
+                        {meal.ingredients.slice(0, 3).map((ing) => (
+                          <span key={ing} className="meal-card-pill">{ing}</span>
+                        ))}
+                        {meal.ingredients.length > 3 ? <span className="meal-card-pill meal-card-pill--more">+{meal.ingredients.length - 3}</span> : null}
+                      </div>
+                    ) : null}
                   </div>
                   {!locked ? (
                     <div className="meal-detail-actions">
+                      <button type="button" title="Edit meal details" onClick={() => setEditingSlot(isEditing ? null : meal.slot)}>
+                        <Pencil size={15} strokeWidth={2.25} />
+                      </button>
                       <button type="button" title="Smart Swap" onClick={() => setSwapTarget({ day: selected.name, slot: meal.slot })}>
                         <RefreshCcw size={15} strokeWidth={2.25} />
                       </button>
@@ -410,6 +478,137 @@ export function MealPlannerTab({
             <button type="button" disabled={!copiedDay || locked} onClick={pasteDay}>Paste Day</button>
             <button type="button" disabled={locked} onClick={clearDay}>Clear Day</button>
           </div>
+
+          {editingMeal ? (
+            <div className="meal-detail-editor">
+              <div className="meal-detail-editor-header">
+                <div>
+                  <span className="meal-detail-editor-eyebrow">Editing · {editingMeal.slot}</span>
+                  <strong className="meal-detail-editor-title">{editingMeal.name === "-" ? "Empty meal" : editingMeal.name}</strong>
+                </div>
+                <button type="button" className="meal-detail-editor-close" onClick={() => setEditingSlot(null)}>
+                  <X size={16} strokeWidth={2.25} />
+                </button>
+              </div>
+              <div className="meal-detail-editor-grid">
+                <label className="meal-detail-editor-full">
+                  Meal name
+                  <input
+                    value={editingMeal.name === "-" ? "" : editingMeal.name}
+                    disabled={locked}
+                    placeholder="e.g. Greek Yogurt with Berries"
+                    onChange={(event) => updateMeal(editingMeal.slot, { name: event.target.value || "-" })}
+                  />
+                </label>
+                <label>
+                  Timing
+                  <input
+                    value={editingMeal.timing}
+                    disabled={locked}
+                    placeholder="e.g. 7:30 AM"
+                    onChange={(event) => updateMeal(editingMeal.slot, { timing: event.target.value })}
+                  />
+                </label>
+                <label>
+                  Portion size
+                  <input
+                    value={editingMeal.portion}
+                    disabled={locked}
+                    placeholder="e.g. 1 bowl"
+                    onChange={(event) => updateMeal(editingMeal.slot, { portion: event.target.value })}
+                  />
+                </label>
+                <label>
+                  Serving quantity
+                  <input
+                    value={editingMeal.servings}
+                    disabled={locked}
+                    placeholder="e.g. 1 serving"
+                    onChange={(event) => updateMeal(editingMeal.slot, { servings: event.target.value })}
+                  />
+                </label>
+                <label>
+                  Calories (kcal)
+                  <input
+                    type="number"
+                    value={editingMeal.cal || ""}
+                    disabled={locked}
+                    placeholder="0"
+                    onChange={(event) => updateMeal(editingMeal.slot, { cal: Number(event.target.value) })}
+                  />
+                </label>
+                <label>
+                  Protein (g)
+                  <input
+                    type="number"
+                    value={editingMeal.protein || ""}
+                    disabled={locked}
+                    placeholder="0"
+                    onChange={(event) => updateMeal(editingMeal.slot, { protein: Number(event.target.value) })}
+                  />
+                </label>
+                <label>
+                  Carbs (g)
+                  <input
+                    type="number"
+                    value={editingMeal.carbs || ""}
+                    disabled={locked}
+                    placeholder="0"
+                    onChange={(event) => updateMeal(editingMeal.slot, { carbs: Number(event.target.value) })}
+                  />
+                </label>
+                <label>
+                  Fats (g)
+                  <input
+                    type="number"
+                    value={editingMeal.fat || ""}
+                    disabled={locked}
+                    placeholder="0"
+                    onChange={(event) => updateMeal(editingMeal.slot, { fat: Number(event.target.value) })}
+                  />
+                </label>
+                <label className="meal-detail-editor-full">
+                  Ingredients <span className="meal-detail-editor-hint">(one per line)</span>
+                  <textarea
+                    value={editingMeal.ingredients.join("\n")}
+                    disabled={locked}
+                    rows={4}
+                    placeholder={"200g Greek yogurt\n60g mixed berries\n15g granola"}
+                    onChange={(event) => updateMeal(editingMeal.slot, { ingredients: splitLines(event.target.value) })}
+                  />
+                </label>
+                <label className="meal-detail-editor-full">
+                  Cooking instructions <span className="meal-detail-editor-hint">(one step per line)</span>
+                  <textarea
+                    value={editingMeal.steps.join("\n")}
+                    disabled={locked}
+                    rows={4}
+                    placeholder={"Season chicken with salt and pepper\nGrill 6–7 min each side\nRest 2 min before serving"}
+                    onChange={(event) => updateMeal(editingMeal.slot, { steps: splitLines(event.target.value) })}
+                  />
+                </label>
+                <label className="meal-detail-editor-full">
+                  Oil &amp; fat instructions
+                  <input
+                    value={editingMeal.oilInstruction}
+                    disabled={locked}
+                    placeholder="e.g. Use 1 tsp olive oil for dressing"
+                    onChange={(event) => updateMeal(editingMeal.slot, { oilInstruction: event.target.value })}
+                  />
+                </label>
+                <label className="meal-detail-editor-full">
+                  Coach notes
+                  <textarea
+                    value={editingMeal.note}
+                    disabled={locked}
+                    rows={3}
+                    placeholder="Additional notes visible on the client plan…"
+                    onChange={(event) => updateMeal(editingMeal.slot, { note: event.target.value })}
+                  />
+                </label>
+              </div>
+            </div>
+          ) : null}
 
           <div className="meal-global-footer">
             <div className="meal-global-footer-left">
@@ -528,9 +727,9 @@ export function MealPlannerTab({
           </div>
           <div className="meal-swap-options">
             {[
-              { name: "Cottage Cheese Bowl", cal: 310, protein: 33, carbs: 36, fat: 7, note: "Similar macros, different texture." },
-              { name: "Salmon & Asparagus", cal: 440, protein: 43, carbs: 26, fat: 16, note: "Rich in omega-3." },
-              { name: "Turkey Wrap", cal: 460, protein: 46, carbs: 29, fat: 14, note: "High protein, easy to prep." },
+              { name: "Cottage Cheese Bowl", cal: 310, protein: 33, carbs: 36, fat: 7, note: "Similar macros, different texture.", ingredients: ["250g cottage cheese", "50g berries", "10g chia seeds"], steps: ["Scoop cottage cheese into bowl", "Top with berries and chia seeds"], oilInstruction: "No oil required", portion: "1 bowl", servings: "1 serving" },
+              { name: "Salmon & Asparagus", cal: 440, protein: 43, carbs: 26, fat: 16, note: "Rich in omega-3.", ingredients: ["180g salmon fillet", "100g asparagus", "1 tsp olive oil", "Lemon"], steps: ["Season salmon with lemon and pepper", "Pan-fry 4 min each side", "Steam asparagus 3–4 min"], oilInstruction: "Use 1 tsp olive oil for pan", portion: "1 plate", servings: "1 serving" },
+              { name: "Turkey Wrap", cal: 460, protein: 46, carbs: 29, fat: 14, note: "High protein, easy to prep.", ingredients: ["160g ground turkey", "1 whole-wheat wrap", "Lettuce", "Tomato", "Mustard"], steps: ["Cook turkey with seasoning", "Layer onto wrap with salad", "Roll tightly and slice"], oilInstruction: "Use cooking spray or 0.5 tsp oil", portion: "1 wrap", servings: "1 serving" },
             ].map((option) => (
               <button
                 key={option.name}
@@ -538,7 +737,20 @@ export function MealPlannerTab({
                 onClick={() => {
                   updateWeek(week.map((day) => day.name === swapTarget.day ? {
                     ...day,
-                    meals: day.meals.map((meal) => meal.slot === swapTarget.slot ? { ...meal, name: option.name, cal: option.cal, protein: option.protein, carbs: option.carbs, fat: option.fat, note: option.note } : meal),
+                    meals: day.meals.map((meal) => meal.slot === swapTarget.slot ? {
+                      ...meal,
+                      name: option.name,
+                      cal: option.cal,
+                      protein: option.protein,
+                      carbs: option.carbs,
+                      fat: option.fat,
+                      note: option.note,
+                      ingredients: option.ingredients,
+                      steps: option.steps,
+                      oilInstruction: option.oilInstruction,
+                      portion: option.portion,
+                      servings: option.servings,
+                    } : meal),
                   } : day));
                   setSwapTarget(null);
                   pushToast(`Swapped to ${option.name}.`, "success");
@@ -615,5 +827,3 @@ export function MealPlannerTab({
     </div>
   );
 }
-
-

@@ -8820,3 +8820,164 @@ code {
     flex-direction: column;
   }
 }
+
+/* ── Meal detail editor ──────────────────────────────────────────── */
+.meal-detail-editor {
+  margin-top: 1.25rem;
+  border: 1px solid var(--outline-variant);
+  border-radius: 14px;
+  background: var(--surface-container-lowest);
+  overflow: hidden;
+}
+
+.meal-detail-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.9rem 1.1rem 0.75rem;
+  border-bottom: 1px solid var(--outline-variant);
+  background: var(--surface-container-low);
+}
+
+.meal-detail-editor-eyebrow {
+  display: block;
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--primary);
+  margin-bottom: 0.2rem;
+}
+
+.meal-detail-editor-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--on-surface);
+}
+
+.meal-detail-editor-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  background: var(--surface-container);
+  color: var(--on-surface-variant);
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+.meal-detail-editor-close:hover {
+  background: var(--surface-container-high);
+}
+
+.meal-detail-editor-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.85rem;
+  padding: 1rem 1.1rem 1.1rem;
+}
+
+.meal-detail-editor-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--on-surface-variant);
+}
+
+.meal-detail-editor-full {
+  grid-column: 1 / -1;
+}
+
+.meal-detail-editor-hint {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.7rem;
+  color: var(--on-surface-variant);
+  opacity: 0.7;
+}
+
+.meal-detail-editor-grid input,
+.meal-detail-editor-grid textarea {
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 400;
+  color: var(--on-surface);
+  background: var(--surface-container);
+  border: 1px solid var(--outline-variant);
+  border-radius: 8px;
+  padding: 0.55rem 0.75rem;
+  outline: none;
+  resize: vertical;
+  transition: border-color 0.15s, background 0.15s;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.meal-detail-editor-grid input:focus,
+.meal-detail-editor-grid textarea:focus {
+  border-color: var(--primary);
+  background: var(--surface);
+}
+
+.meal-detail-editor-grid input:disabled,
+.meal-detail-editor-grid textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* timing badge on meal cards */
+.meal-timing-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: var(--primary-container, #e8f0fe);
+  color: var(--on-primary-container, #1a237e);
+  margin-left: 0.4rem;
+}
+
+/* ingredient pills on meal cards */
+.meal-card-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.4rem;
+}
+
+.meal-card-pill {
+  font-size: 0.65rem;
+  font-weight: 500;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: var(--surface-container-high);
+  color: var(--on-surface-variant);
+  white-space: nowrap;
+}
+
+.meal-card-pill--more {
+  background: var(--surface-container-highest);
+  color: var(--primary);
+}
+
+/* editing highlight on meal card */
+.meal-detail-card--editing {
+  border-color: var(--primary) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 18%, transparent) !important;
+}
+
+@media (max-width: 600px) {
+  .meal-detail-editor-grid {
+    grid-template-columns: 1fr;
+  }
+  .meal-detail-editor-full {
+    grid-column: 1;
+  }
+}
