@@ -10,7 +10,7 @@ import { CompetitorsView } from "./views/CompetitorsView";
 import { ExerciseLibraryView } from "./views/ExerciseLibraryView";
 import { deriveClientInitials, sanitizeClientAvatarPrefs, type ClientAvatarPrefs } from "./lib/clientAvatar";
 import { MealPlannerTab } from "./views/MealPlannerTab";
-import { AINutritionChat } from "./views/AINutritionChat";
+import { AINutritionChat, AIChatMessage } from "./views/AINutritionChat";
 import { RecipeBrowserView } from "./views/RecipeBrowserView";
 import { WorkoutPlannerTab, type WorkoutExercise, type WorkoutWeekDay } from "./views/WorkoutPlannerTab";
 
@@ -1911,6 +1911,7 @@ function PortalView({ session, clientPortal, selectedClientId, onSwitchClient, o
   const [macroTargets, setMacroTargets] = useState<PlannerTarget[]>(() => createPlannerTargets(clientPortal?.client));
   const [lastSavedAt, setLastSavedAt] = useState<Date>(new Date());
   const [sentMealPlan, setSentMealPlan] = useState(false);
+  const [chatMessages, setChatMessages] = useState<Record<string, AIChatMessage[]>>({});
   const [portalNotes, setPortalNotes] = useState<ClientNote[]>([]);
   const [portalNewNote, setPortalNewNote] = useState("");
   const [portalNoteSaving, setPortalNoteSaving] = useState(false);
@@ -2385,9 +2386,10 @@ function PortalView({ session, clientPortal, selectedClientId, onSwitchClient, o
 
           {activeTab === "ai-nutrition" && clientPortal && (
             <AINutritionChat
-              key={clientPortal.client.id + "-ai-nutrition"}
               clientProfile={clientPortal.client}
               mealWeek={mealWeek}
+              messages={chatMessages[clientPortal.client.id] ?? []}
+              onMessagesChange={(msgs) => setChatMessages(prev => ({ ...prev, [clientPortal.client.id]: msgs }))}
             />
           )}
 

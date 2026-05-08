@@ -24,7 +24,7 @@ interface WeekDay {
   meals: { slot: string; name: string; cal: number; protein: number; carbs: number; fat: number }[];
 }
 
-interface ChatMessage {
+export interface AIChatMessage {
   role: "coach" | "ai";
   content: string;
 }
@@ -42,9 +42,11 @@ interface RecipeCard {
   steps: string[];
 }
 
-interface AINutritionChatProps {
+export interface AINutritionChatProps {
   clientProfile: ClientProfile | null;
   mealWeek?: WeekDay[];
+  messages: AIChatMessage[];
+  onMessagesChange: (msgs: AIChatMessage[]) => void;
 }
 
 function authHeaders(): Record<string, string> {
@@ -54,14 +56,15 @@ function authHeaders(): Record<string, string> {
   return h;
 }
 
-async function checkKeyStatus(): Promise<boolean> {
+async function checkKeyStatus(): Promise<"ok" | "missing" | "error"> {
   try {
     const res = await fetch(`${apiBase}/ai/nutrition-status`, { headers: authHeaders() });
-    if (!res.ok) return false;
+    if (res.status === 401) return "error";
+    if (!res.ok) return "error";
     const data = await res.json() as { keyConfigured?: boolean };
-    return Boolean(data.keyConfigured);
+    return data.keyConfigured ? "ok" : "missing";
   } catch {
-    return false;
+    return "error";
   }
 }
 
@@ -119,31 +122,24 @@ function RecipeCardView({ card }: { card: RecipeCard }) {
           {card.timing && <span>· {card.timing}</span>}
         </div>
       </div>
-
       {card.oilNote && (
         <div className="ai-chat-recipe-oil-note">
           <span className="ai-chat-recipe-oil-label">Oil / Fat note:</span> {card.oilNote}
         </div>
       )}
-
       {card.ingredients && card.ingredients.length > 0 && (
         <div className="ai-chat-recipe-section">
           <div className="ai-chat-recipe-section-title">Ingredients</div>
           <ul className="ai-chat-recipe-list">
-            {card.ingredients.map((ing, i) => (
-              <li key={i}>{ing}</li>
-            ))}
+            {card.ingredients.map((ing, i) => <li key={i}>{ing}</li>)}
           </ul>
         </div>
       )}
-
       {card.steps && card.steps.length > 0 && (
         <div className="ai-chat-recipe-section">
           <div className="ai-chat-recipe-section-title">Steps</div>
           <ol className="ai-chat-recipe-list ai-chat-recipe-list--steps">
-            {card.steps.map((step, i) => (
-              <li key={i}>{step}</li>
-            ))}
+            {card.steps.map((step, i) => <li key={i}>{step}</li>)}
           </ol>
         </div>
       )}
@@ -151,10 +147,9 @@ function RecipeCardView({ card }: { card: RecipeCard }) {
   );
 }
 
-function MessageBubble({ msg }: { msg: ChatMessage }) {
+function MessageBubble({ msg }: { msg: AIChatMessage }) {
   const isCoach = msg.role === "coach";
   const parsed = isCoach ? null : parseRecipeCard(msg.content);
-
   return (
     <div className={`ai-chat-message ai-chat-message--${msg.role}`}>
       {isCoach ? (
@@ -188,13 +183,6 @@ function TypingIndicator() {
   );
 }
 
-const SUGGESTED_QUERIES = [
-  "Give me a high-protein breakfast under 400 kcal",
-  "Suggest a pre-workout meal for this client",
-  "Create a Hummus Pita recipe with 50g protein",
-  "What are 3 snack options under 200 kcal?",
-];
-
 function SetupScreen({ onRetry }: { onRetry: () => void }) {
   return (
     <div className="ai-chat-setup">
@@ -205,40 +193,38 @@ function SetupScreen({ onRetry }: { onRetry: () => void }) {
         then restart the API Server workflow.
       </p>
       <ol className="ai-chat-setup-steps">
-        <li>Open the <strong>Secrets</strong> panel in your Replit workspace (lock icon in the sidebar)</li>
+        <li>Open the <strong>Secrets</strong> panel in your Replit workspace (lock icon)</li>
         <li>Add a secret named <code>OPENAI_API_KEY</code> with your OpenAI API key</li>
         <li>Restart the <strong>API Server</strong> workflow</li>
       </ol>
-      <button className="ai-chat-setup-retry" onClick={onRetry}>
-        Check again
-      </button>
+      <button className="ai-chat-setup-retry" onClick={onRetry}>Check again</button>
     </div>
   );
 }
 
-export function AINutritionChat({ clientProfile, mealWeek }: AINutritionChatProps) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+const SUGGESTED_QUERIES = [
+  "Give me a high-protein breakfast under 400 kcal",
+  "Suggest a pre-workout meal for this client",
+  "Create a Hummus Pita recipe with 50g protein",
+  "What are 3 snack options under 200 kcal?",
+];
+
+export function AINutritionChat({ clientProfile, mealWeek, messages, onMessagesChange }: AINutritionChatProps) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
-  const [keyStatus, setKeyStatus] = useState<"checking" | "ok" | "missing">("checking");
+  const [keyStatus, setKeyStatus] = useState<"checking" | "ok" | "missing" | "error">("checking");
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const verifyKeyStatus = useCallback(async () => {
     setKeyStatus("checking");
-    const ok = await checkKeyStatus();
-    setKeyStatus(ok ? "ok" : "missing");
+    const status = await checkKeyStatus();
+    setKeyStatus(status);
   }, []);
 
   useEffect(() => {
     void verifyKeyStatus();
   }, [verifyKeyStatus]);
-
-  useEffect(() => {
-    setMessages([]);
-    setKeyStatus("checking");
-    void verifyKeyStatus();
-  }, [clientProfile?.fullName, verifyKeyStatus]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -248,9 +234,9 @@ export function AINutritionChat({ clientProfile, mealWeek }: AINutritionChatProp
     const trimmed = text.trim();
     if (!trimmed || loading || !clientProfile || keyStatus !== "ok") return;
 
-    const newMsg: ChatMessage = { role: "coach", content: trimmed };
+    const newMsg: AIChatMessage = { role: "coach", content: trimmed };
     const updated = [...messages, newMsg];
-    setMessages(updated);
+    onMessagesChange(updated);
     setInput("");
     setLoading(true);
 
@@ -262,21 +248,18 @@ export function AINutritionChat({ clientProfile, mealWeek }: AINutritionChatProp
     try {
       const result = await fetchNutritionChat(openaiMessages, clientProfile, mealWeek);
       if (result.error === "OPENAI_KEY_MISSING") {
-        setMessages(prev => prev.slice(0, -1));
+        onMessagesChange(messages);
         setInput(trimmed);
         setKeyStatus("missing");
       } else {
-        setMessages(prev => [...prev, { role: "ai", content: result.reply ?? "" }]);
+        onMessagesChange([...updated, { role: "ai", content: result.reply ?? "" }]);
       }
     } catch {
-      setMessages(prev => [...prev, {
-        role: "ai",
-        content: "Sorry, something went wrong. Please try again.",
-      }]);
+      onMessagesChange([...updated, { role: "ai", content: "Sorry, something went wrong. Please try again." }]);
     } finally {
       setLoading(false);
     }
-  }, [clientProfile, keyStatus, loading, mealWeek, messages]);
+  }, [clientProfile, keyStatus, loading, mealWeek, messages, onMessagesChange]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -297,8 +280,12 @@ export function AINutritionChat({ clientProfile, mealWeek }: AINutritionChatProp
   if (keyStatus === "checking") {
     return (
       <div className="ai-chat-empty">
-        <div className="ai-chat-dot" style={{ width: 10, height: 10, animationDelay: "0s" }} />
-        <p style={{ marginTop: "0.5rem", color: "var(--text-muted)", fontSize: "0.875rem" }}>Loading AI assistant…</p>
+        <div className="ai-chat-typing-row">
+          <span className="ai-chat-dot" />
+          <span className="ai-chat-dot" />
+          <span className="ai-chat-dot" />
+        </div>
+        <p style={{ marginTop: "0.75rem", color: "var(--text-muted)", fontSize: "0.875rem" }}>Connecting to AI assistant…</p>
       </div>
     );
   }
@@ -313,40 +300,23 @@ export function AINutritionChat({ clientProfile, mealWeek }: AINutritionChatProp
   return (
     <div className="ai-chat-layout">
       <div className="ai-chat-context-card">
-        <button
-          className="ai-chat-context-toggle"
-          onClick={() => setContextOpen(o => !o)}
-          type="button"
-        >
+        <button className="ai-chat-context-toggle" onClick={() => setContextOpen(o => !o)} type="button">
           <span className="ai-chat-context-label">
             <Bot size={15} />
             AI context for <strong>{clientProfile.fullName}</strong>
           </span>
           {contextOpen ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
         </button>
-
         {contextOpen && (
           <div className="ai-chat-context-body">
             <div className="ai-chat-context-pills">
               <span className="ai-chat-ctx-pill ai-chat-ctx-pill--goal">{clientProfile.goal}</span>
-              {clientProfile.nutritionCalories && (
-                <span className="ai-chat-ctx-pill">{clientProfile.nutritionCalories} kcal/day</span>
-              )}
-              {clientProfile.nutritionProteinG && (
-                <span className="ai-chat-ctx-pill">{clientProfile.nutritionProteinG}g protein</span>
-              )}
-              {clientProfile.nutritionCarbsG && (
-                <span className="ai-chat-ctx-pill">{clientProfile.nutritionCarbsG}g carbs</span>
-              )}
-              {clientProfile.nutritionFatG && (
-                <span className="ai-chat-ctx-pill">{clientProfile.nutritionFatG}g fat</span>
-              )}
-              {clientProfile.clientGender && (
-                <span className="ai-chat-ctx-pill">{clientProfile.clientGender}</span>
-              )}
-              {clientProfile.goalTimelineMonths && (
-                <span className="ai-chat-ctx-pill">{clientProfile.goalTimelineMonths}mo timeline</span>
-              )}
+              {clientProfile.nutritionCalories && <span className="ai-chat-ctx-pill">{clientProfile.nutritionCalories} kcal/day</span>}
+              {clientProfile.nutritionProteinG && <span className="ai-chat-ctx-pill">{clientProfile.nutritionProteinG}g protein</span>}
+              {clientProfile.nutritionCarbsG && <span className="ai-chat-ctx-pill">{clientProfile.nutritionCarbsG}g carbs</span>}
+              {clientProfile.nutritionFatG && <span className="ai-chat-ctx-pill">{clientProfile.nutritionFatG}g fat</span>}
+              {clientProfile.clientGender && <span className="ai-chat-ctx-pill">{clientProfile.clientGender}</span>}
+              {clientProfile.goalTimelineMonths && <span className="ai-chat-ctx-pill">{clientProfile.goalTimelineMonths}mo timeline</span>}
             </div>
             {hasConditions && (
               <div className="ai-chat-context-row">
@@ -381,18 +351,12 @@ export function AINutritionChat({ clientProfile, mealWeek }: AINutritionChatProp
             <p className="ai-chat-welcome-sub">Recipes, meal timing, macro breakdowns, pre/post-workout ideas — all personalised to their profile.</p>
             <div className="ai-chat-suggestions">
               {SUGGESTED_QUERIES.map(q => (
-                <button key={q} className="ai-chat-suggestion-btn" onClick={() => void sendMessage(q)} type="button">
-                  {q}
-                </button>
+                <button key={q} className="ai-chat-suggestion-btn" onClick={() => void sendMessage(q)} type="button">{q}</button>
               ))}
             </div>
           </div>
         )}
-
-        {messages.map((msg, i) => (
-          <MessageBubble key={i} msg={msg} />
-        ))}
-
+        {messages.map((msg, i) => <MessageBubble key={i} msg={msg} />)}
         {loading && <TypingIndicator />}
         <div ref={messagesEndRef} />
       </div>
