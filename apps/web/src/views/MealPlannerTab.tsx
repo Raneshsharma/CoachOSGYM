@@ -473,12 +473,6 @@ export function MealPlannerTab({
             </button>
           </div>
 
-          <div className="meal-day-toolbar">
-            <button type="button" disabled={locked} onClick={copyDay}>Copy Day</button>
-            <button type="button" disabled={!copiedDay || locked} onClick={pasteDay}>Paste Day</button>
-            <button type="button" disabled={locked} onClick={clearDay}>Clear Day</button>
-          </div>
-
           {editingMeal ? (
             <div className="meal-detail-editor">
               <div className="meal-detail-editor-header">
@@ -609,6 +603,12 @@ export function MealPlannerTab({
               </div>
             </div>
           ) : null}
+
+          <div className="meal-day-toolbar">
+            <button type="button" disabled={locked} onClick={copyDay}>Copy Day</button>
+            <button type="button" disabled={!copiedDay || locked} onClick={pasteDay}>Paste Day</button>
+            <button type="button" disabled={locked} onClick={clearDay}>Clear Day</button>
+          </div>
 
           <div className="meal-global-footer">
             <div className="meal-global-footer-left">

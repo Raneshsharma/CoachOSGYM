@@ -5280,12 +5280,6 @@ code {
 .meal-detail-actions {
   display: flex;
   gap: 0.35rem;
-  opacity: 0;
-  transition: opacity 0.15s ease;
-}
-
-.meal-detail-card:hover .meal-detail-actions,
-.meal-detail-card--selected .meal-detail-actions {
   opacity: 1;
 }
 
