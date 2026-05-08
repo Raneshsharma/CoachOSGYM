@@ -28,6 +28,9 @@ firebase-debug.*.log
 # Only .env.example is committed (it has no real values)
 # Cloudflare Workers local dev secrets — never commit
 .dev.vars
+api/.dev.vars
+# Claude / AI assistant local settings — may contain tokens in allowed-commands lists
+.claude/settings.local.json
 
 # ─── Test coverage ──────────────────────────────
 coverage/
