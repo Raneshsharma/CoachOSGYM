@@ -10,6 +10,7 @@ import { CompetitorsView } from "./views/CompetitorsView";
 import { ExerciseLibraryView } from "./views/ExerciseLibraryView";
 import { deriveClientInitials, sanitizeClientAvatarPrefs, type ClientAvatarPrefs } from "./lib/clientAvatar";
 import { MealPlannerTab } from "./views/MealPlannerTab";
+import { AINutritionChat } from "./views/AINutritionChat";
 import { RecipeBrowserView } from "./views/RecipeBrowserView";
 import { WorkoutPlannerTab, type WorkoutExercise, type WorkoutWeekDay } from "./views/WorkoutPlannerTab";
 
@@ -1903,7 +1904,7 @@ function PortalView({ session, clientPortal, selectedClientId, onSwitchClient, o
   const [tempSupplements, setTempSupplements] = useState("");
   const [newHealthLabel, setNewHealthLabel] = useState("");
   const [newHealthNote, setNewHealthNote] = useState("");
-  const [activeTab, setActiveTab] = useState<"plan"|"meal"|"workout"|"messages"|"history"|"notes"|"progress"|"payments">("plan");
+  const [activeTab, setActiveTab] = useState<"plan"|"meal"|"ai-nutrition"|"workout"|"notes"|"progress"|"payments"|"messages"|"history">("plan");
   const [showPhotos, setShowPhotos] = useState(false);
   const [mealWeek, setMealWeek] = useState<PlannerWeekDay[]>(() => createPlannerWeek());
   const [workoutWeek, setWorkoutWeek] = useState<WorkoutWeekDay[]>(() => createWorkoutWeek());
@@ -2238,6 +2239,7 @@ function PortalView({ session, clientPortal, selectedClientId, onSwitchClient, o
   const tabItems = [
     { key: "plan" as const, label: "Overview" },
     { key: "meal" as const, label: "AI Meal Planning" },
+    { key: "ai-nutrition" as const, label: "AI Nutrition" },
     { key: "workout" as const, label: "AI Workout Plan" },
     { key: "notes" as const, label: "Notes" },
     { key: "progress" as const, label: "Progress" },
@@ -2378,6 +2380,14 @@ function PortalView({ session, clientPortal, selectedClientId, onSwitchClient, o
                 return wasSent;
               }}
               pushToast={push}
+            />
+          )}
+
+          {activeTab === "ai-nutrition" && clientPortal && (
+            <AINutritionChat
+              key={clientPortal.client.id + "-ai-nutrition"}
+              clientProfile={clientPortal.client}
+              mealWeek={mealWeek}
             />
           )}
 

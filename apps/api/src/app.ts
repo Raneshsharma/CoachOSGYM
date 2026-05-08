@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import { analyticsEventSchema, groupProgramSchema, nutritionSwapSchema } from "@coachos/domain";
 import { DemoStore } from "./store";
+import OpenAI from "openai";
 
 export function createApp(store: DemoStore) {
   const app = express();
@@ -440,6 +441,39 @@ export function createApp(store: DemoStore) {
     const date = typeof req.body.date === "string" ? req.body.date : new Date().toISOString().slice(0, 10);
     const result = await store.toggleHabitCompletion(req.params.habitId, date);
     res.json(result.completion);
+  });
+
+  // ── AI Nutrition Chat ─────────────────────────────────────
+  app.post("/api/ai/nutrition-chat", async (req, res) => {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      res.status(503).json({ error: "OPENAI_KEY_MISSING", reply: "" });
+      return;
+    }
+
+    const { messages, systemPrompt } = req.body ?? {};
+    if (!Array.isArray(messages) || typeof systemPrompt !== "string") {
+      res.status(400).json({ message: "messages (array) and systemPrompt (string) are required." });
+      return;
+    }
+
+    try {
+      const openai = new OpenAI({ apiKey });
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: systemPrompt },
+          ...messages as { role: "user" | "assistant"; content: string }[],
+        ],
+        max_tokens: 1200,
+        temperature: 0.7,
+      });
+      const reply = completion.choices[0]?.message?.content ?? "";
+      res.json({ reply });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "OpenAI request failed";
+      res.status(502).json({ message: msg });
+    }
   });
 
   return app;
