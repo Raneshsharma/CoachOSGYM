@@ -4,7 +4,12 @@
  */
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { supabase } from "./supabase";
+import { initSupabase, supabase } from "./supabase";
+
+type WorkerEnv = {
+  SUPABASE_URL: string;
+  SUPABASE_SERVICE_ROLE_KEY: string;
+};
 
 // ── Domain types ───────────────────────────────────────────────────────────────
 
@@ -466,7 +471,6 @@ async function getAnalytics() {
 async function getRuntimeInfo() {
   return {
     storage: "supabase",
-    supabaseUrl: "https://jmbrinamojsgfkfwgsce.supabase.co",
     services: { planGeneration: "supabase", billing: "supabase" },
   };
 }
@@ -791,7 +795,12 @@ async function getClientSession(clientId: string) {
 
 // ── Hono app ──────────────────────────────────────────────────────────────────
 
-const app = new Hono();
+const app = new Hono<{ Bindings: WorkerEnv }>();
+
+app.use("/*", async (c, next) => {
+  initSupabase(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY);
+  await next();
+});
 
 app.use("/*", cors({
   origin: "*",

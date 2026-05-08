@@ -1,0 +1,10 @@
+# Cloudflare Workers local development secrets
+# Copy this file to .dev.vars and fill in real values.
+# NEVER commit .dev.vars to git — it is excluded by .gitignore.
+#
+# These values are injected as Worker bindings at runtime.
+# In production, set them via: wrangler secret put SUPABASE_URL
+#                               wrangler secret put SUPABASE_SERVICE_ROLE_KEY
+
+SUPABASE_URL=https://<your-project-ref>.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=<your-service-role-key>
