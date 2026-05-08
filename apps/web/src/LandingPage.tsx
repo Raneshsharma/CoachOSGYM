@@ -1,996 +1,1277 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
+/* ─────────────────────────────────────────────────────────────────
+   STYLES
+───────────────────────────────────────────────────────────────── */
 const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800;900&family=Inter:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800;900&family=Inter:wght@400;500;600;700&display=swap');
 
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
 
-:root {
-  --lp-green:   #008767;
-  --lp-green-d: #065f46;
-  --lp-navy:    #1a1a2e;
-  --lp-navy2:   #252542;
-  --lp-accent:  #f97316;
-  --lp-bg:      #F8F9F8;
-  --lp-white:   #ffffff;
-  --lp-muted:   #6d7a73;
-  --lp-border:  #e0e7e4;
+:root{
+  --g:#00a67d;--gd:#065f46;--gl:#34d399;
+  --navy:#0d0d1a;--navy2:#13131f;--navy3:#1c1c30;
+  --white:#ffffff;--off:#f7f8f7;--muted:#8a9590;
+  --border:rgba(255,255,255,0.07);
+  --ease:cubic-bezier(0.16,1,0.3,1);
+  --ease2:cubic-bezier(0.34,1.56,0.64,1);
 }
 
-.lp { font-family: 'Inter', sans-serif; background: var(--lp-bg); color: #181c1c; overflow-x: hidden; }
+.lp{font-family:'Inter',sans-serif;background:var(--off);color:#111;overflow-x:hidden}
 
 /* ── NAV ── */
-.lp-nav {
-  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
-  padding: 0 2rem;
-  height: 68px;
-  display: flex; align-items: center; justify-content: space-between;
-  transition: background 0.3s, box-shadow 0.3s, backdrop-filter 0.3s;
+.lp-nav{
+  position:fixed;top:0;left:0;right:0;z-index:200;
+  height:64px;display:flex;align-items:center;justify-content:space-between;
+  padding:0 clamp(1.5rem,4vw,3rem);
+  transition:background .4s var(--ease),border-color .4s;
+  border-bottom:1px solid transparent;
 }
-.lp-nav.scrolled {
-  background: rgba(255,255,255,0.85);
-  backdrop-filter: blur(16px);
-  box-shadow: 0 1px 0 rgba(0,0,0,0.07);
+.lp-nav.solid{
+  background:rgba(13,13,26,0.85);
+  backdrop-filter:blur(20px) saturate(180%);
+  -webkit-backdrop-filter:blur(20px) saturate(180%);
+  border-color:var(--border);
 }
-.lp-nav-logo {
-  display: flex; align-items: center; gap: 0.6rem;
-  font-family: 'Manrope', sans-serif; font-weight: 800; font-size: 1.25rem;
-  color: var(--lp-navy); text-decoration: none;
+.lp-logo{display:flex;align-items:center;gap:.55rem;text-decoration:none}
+.lp-logo-mark{
+  width:34px;height:34px;border-radius:9px;background:var(--g);
+  display:flex;align-items:center;justify-content:center;
+  font-family:'Manrope',sans-serif;font-weight:900;font-size:.95rem;color:#fff;
+  box-shadow:0 0 20px rgba(0,166,125,0.4);
 }
-.lp-nav-logo-mark {
-  width: 36px; height: 36px; border-radius: 10px;
-  background: var(--lp-green);
-  display: flex; align-items: center; justify-content: center;
-  color: #fff; font-weight: 900; font-size: 1rem; font-family: 'Manrope', sans-serif;
+.lp-logo-text{font-family:'Manrope',sans-serif;font-weight:800;font-size:1.15rem;color:#fff;letter-spacing:-.02em}
+.lp-nav-links{display:flex;gap:2rem}
+.lp-nav-links a{font-size:.85rem;font-weight:500;color:rgba(255,255,255,.5);text-decoration:none;transition:color .2s}
+.lp-nav-links a:hover{color:#fff}
+.lp-nav-ctas{display:flex;gap:.75rem;align-items:center}
+.lp-nav-ghost{
+  font-size:.85rem;font-weight:600;color:rgba(255,255,255,.65);
+  background:none;border:none;cursor:pointer;padding:.4rem .9rem;
+  border-radius:8px;font-family:'Inter',sans-serif;transition:color .2s;
 }
-.lp-nav-links { display: flex; align-items: center; gap: 2rem; }
-.lp-nav-links a {
-  font-size: 0.875rem; font-weight: 500; color: #3d4a43;
-  text-decoration: none; transition: color 0.2s;
+.lp-nav-ghost:hover{color:#fff}
+.lp-nav-cta{
+  font-size:.85rem;font-weight:700;color:#fff;
+  background:var(--g);border:none;cursor:pointer;
+  padding:.45rem 1.1rem;border-radius:9px;
+  font-family:'Inter',sans-serif;
+  box-shadow:0 0 0 0 rgba(0,166,125,0);
+  transition:background .2s, box-shadow .3s, transform .2s var(--ease2);
 }
-.lp-nav-links a:hover { color: var(--lp-green); }
-.lp-nav-actions { display: flex; align-items: center; gap: 0.75rem; }
-.lp-btn-ghost {
-  font-size: 0.875rem; font-weight: 600; color: var(--lp-navy);
-  background: none; border: none; cursor: pointer; padding: 0.5rem 1rem;
-  border-radius: 8px; transition: background 0.15s;
-  font-family: 'Inter', sans-serif;
-}
-.lp-btn-ghost:hover { background: rgba(0,135,103,0.07); color: var(--lp-green); }
-.lp-btn-primary {
-  font-size: 0.875rem; font-weight: 700; color: #fff;
-  background: var(--lp-green); border: none; cursor: pointer;
-  padding: 0.55rem 1.25rem; border-radius: 10px;
-  font-family: 'Inter', sans-serif;
-  box-shadow: 0 2px 8px rgba(0,135,103,0.3);
-  transition: background 0.15s, transform 0.15s, box-shadow 0.15s;
-}
-.lp-btn-primary:hover {
-  background: var(--lp-green-d);
-  transform: translateY(-1px);
-  box-shadow: 0 4px 16px rgba(0,135,103,0.35);
-}
+.lp-nav-cta:hover{background:var(--gd);transform:scale(1.04);box-shadow:0 0 28px rgba(0,166,125,0.45)}
 
 /* ── HERO ── */
-.lp-hero {
-  min-height: 100vh;
-  padding: 120px 2rem 80px;
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  text-align: center; position: relative; overflow: hidden;
-  background: linear-gradient(160deg, #f0fdf9 0%, var(--lp-bg) 50%, #fef3f0 100%);
+.lp-hero{
+  min-height:100vh;position:relative;overflow:hidden;
+  background:var(--navy);
+  display:grid;grid-template-columns:1fr 1fr;align-items:center;
+  padding:120px clamp(1.5rem,5vw,5rem) 80px;
+  gap:4rem;
 }
-.lp-hero-blob {
-  position: absolute; border-radius: 50%; filter: blur(80px); opacity: 0.4;
-  pointer-events: none; animation: blobFloat 8s ease-in-out infinite;
+@media(max-width:900px){.lp-hero{grid-template-columns:1fr;padding-top:110px}}
+.lp-hero-mesh{
+  position:absolute;inset:0;pointer-events:none;z-index:0;
+  background:
+    radial-gradient(ellipse 60% 60% at var(--mx,30%) var(--my,40%), rgba(0,166,125,.18) 0%, transparent 60%),
+    radial-gradient(ellipse 40% 40% at 80% 10%, rgba(99,102,241,.12) 0%, transparent 60%),
+    radial-gradient(ellipse 50% 50% at 10% 80%, rgba(249,115,22,.08) 0%, transparent 60%);
+  transition:background .1s linear;
 }
-.lp-hero-blob:nth-child(1) {
-  width: 500px; height: 500px; top: -100px; left: -100px;
-  background: radial-gradient(circle, #bbf7d0, #6ee7b7);
-  animation-delay: 0s;
+.lp-hero-grid-lines{
+  position:absolute;inset:0;pointer-events:none;z-index:0;
+  background-image:
+    linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.025) 1px,transparent 1px);
+  background-size:60px 60px;
+  mask-image:radial-gradient(ellipse 80% 80% at 50% 50%, black 20%, transparent 80%);
 }
-.lp-hero-blob:nth-child(2) {
-  width: 400px; height: 400px; bottom: -60px; right: -60px;
-  background: radial-gradient(circle, #fed7aa, #fdba74);
-  animation-delay: 3s;
+.lp-hero-left{position:relative;z-index:1}
+.lp-hero-badge{
+  display:inline-flex;align-items:center;gap:.5rem;
+  background:rgba(0,166,125,.1);border:1px solid rgba(0,166,125,.25);
+  color:#34d399;font-size:.72rem;font-weight:700;
+  padding:.3rem .85rem;border-radius:999px;letter-spacing:.06em;text-transform:uppercase;
+  margin-bottom:1.75rem;
+  opacity:0;transform:translateY(12px);
+  transition:opacity .6s var(--ease), transform .6s var(--ease);
 }
-.lp-hero-blob:nth-child(3) {
-  width: 300px; height: 300px; top: 30%; left: 60%;
-  background: radial-gradient(circle, #c7d2fe, #a5b4fc);
-  animation-delay: 5s; opacity: 0.25;
+.lp-hero-badge.in{opacity:1;transform:translateY(0)}
+.lp-badge-pulse{
+  width:6px;height:6px;border-radius:50%;background:#34d399;
+  animation:badgePulse 2s ease-in-out infinite;
 }
-@keyframes blobFloat {
-  0%, 100% { transform: translate(0,0) scale(1); }
-  33% { transform: translate(30px,-20px) scale(1.05); }
-  66% { transform: translate(-20px,30px) scale(0.95); }
+@keyframes badgePulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(1.5)}}
+
+.lp-hero-h1{
+  font-family:'Manrope',sans-serif;font-weight:900;
+  font-size:clamp(2.6rem,5.5vw,4.2rem);
+  line-height:1.06;letter-spacing:-.04em;color:#fff;
+  margin-bottom:1.5rem;
+}
+.lp-word{
+  display:inline-block;overflow:hidden;vertical-align:bottom;
+  padding-right:.18em;
+}
+.lp-word-inner{
+  display:inline-block;
+  transform:translateY(110%) rotate(3deg);opacity:0;
+  transition:transform .7s var(--ease), opacity .5s ease;
+}
+.lp-word-inner.in{transform:translateY(0) rotate(0deg);opacity:1}
+.lp-word-green .lp-word-inner{color:var(--gl)}
+
+.lp-hero-sub{
+  font-size:1.05rem;color:rgba(255,255,255,.5);line-height:1.75;
+  max-width:480px;margin-bottom:2.5rem;
+  opacity:0;transform:translateY(16px);
+  transition:opacity .7s .5s var(--ease),transform .7s .5s var(--ease);
+}
+.lp-hero-sub.in{opacity:1;transform:translateY(0)}
+
+.lp-hero-actions{
+  display:flex;gap:1rem;flex-wrap:wrap;
+  opacity:0;transform:translateY(16px);
+  transition:opacity .7s .65s var(--ease),transform .7s .65s var(--ease);
+}
+.lp-hero-actions.in{opacity:1;transform:translateY(0)}
+
+.lp-magbtn{
+  position:relative;overflow:hidden;cursor:pointer;border:none;
+  font-family:'Inter',sans-serif;font-weight:700;border-radius:12px;
+  transition:transform .3s var(--ease2),box-shadow .3s;
+}
+.lp-magbtn-primary{
+  background:var(--g);color:#fff;
+  padding:.85rem 2rem;font-size:1rem;
+  box-shadow:0 4px 32px rgba(0,166,125,.35);
+}
+.lp-magbtn-primary:hover{box-shadow:0 8px 48px rgba(0,166,125,.5)}
+.lp-magbtn-primary::after{
+  content:'';position:absolute;inset:0;
+  background:radial-gradient(circle at var(--bx,50%) var(--by,50%), rgba(255,255,255,.25) 0%, transparent 60%);
+  opacity:0;transition:opacity .3s;
+}
+.lp-magbtn-primary:hover::after{opacity:1}
+.lp-magbtn-ghost{
+  background:rgba(255,255,255,.06);color:rgba(255,255,255,.8);
+  padding:.85rem 2rem;font-size:1rem;
+  border:1px solid rgba(255,255,255,.12);
+  backdrop-filter:blur(8px);
+}
+.lp-magbtn-ghost:hover{background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.25)}
+
+.lp-hero-trust{
+  display:flex;align-items:center;gap:1rem;margin-top:2rem;
+  opacity:0;transition:opacity .7s .8s;
+}
+.lp-hero-trust.in{opacity:1}
+.lp-trust-avatars{display:flex}
+.lp-trust-av{
+  width:28px;height:28px;border-radius:50%;border:2px solid var(--navy);
+  margin-left:-7px;display:flex;align-items:center;justify-content:center;
+  font-size:.55rem;font-weight:800;color:#fff;
+}
+.lp-trust-av:first-child{margin-left:0}
+.lp-trust-text{font-size:.78rem;color:rgba(255,255,255,.4);font-weight:500}
+.lp-trust-stars{color:#f59e0b;font-size:.72rem;letter-spacing:.05em}
+
+/* ── HERO RIGHT — INTERACTIVE DASHBOARD ── */
+.lp-hero-right{
+  position:relative;z-index:1;
+  opacity:0;transform:translateX(40px) scale(.97);
+  transition:opacity .9s .3s var(--ease),transform .9s .3s var(--ease);
+}
+@media(max-width:900px){.lp-hero-right{display:none}}
+.lp-hero-right.in{opacity:1;transform:translateX(0) scale(1)}
+
+.lp-dash{
+  border-radius:16px;overflow:hidden;
+  background:#111827;
+  box-shadow:0 40px 80px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.06);
+  transform:perspective(1200px) rotateY(var(--ry,-6deg)) rotateX(var(--rx,3deg));
+  transition:transform .15s linear;
+}
+.lp-dash-bar{
+  height:32px;background:#0d1117;display:flex;align-items:center;padding:0 .75rem;gap:.4rem;
+}
+.lp-dash-dot{width:9px;height:9px;border-radius:50%}
+.lp-dash-dot:nth-child(1){background:#ef4444}
+.lp-dash-dot:nth-child(2){background:#f59e0b}
+.lp-dash-dot:nth-child(3){background:#22c55e}
+.lp-dash-addr{
+  flex:1;height:17px;background:#1f2937;border-radius:4px;margin-left:.5rem;
+  display:flex;align-items:center;padding:0 .5rem;
+  font-size:.58rem;color:#4b5563;font-family:'Inter',sans-serif;
+}
+.lp-dash-body{display:flex;height:340px}
+.lp-dash-sidebar{
+  width:160px;background:#0d1117;flex-shrink:0;
+  display:flex;flex-direction:column;padding:.75rem .5rem;gap:.2rem;
+  border-right:1px solid rgba(255,255,255,.05);
+}
+.lp-dash-brand{
+  font-family:'Manrope',sans-serif;font-weight:800;font-size:.85rem;color:#fff;
+  padding:.3rem .5rem .75rem;letter-spacing:-.02em;
+}
+.lp-dash-nav{
+  height:30px;border-radius:7px;display:flex;align-items:center;
+  padding:0 .6rem;gap:.4rem;font-size:.68rem;cursor:pointer;
+  color:rgba(255,255,255,.4);transition:background .15s,color .15s;
+  font-family:'Inter',sans-serif;font-weight:500;
+  border:none;background:none;width:100%;text-align:left;
+}
+.lp-dash-nav:hover{background:rgba(255,255,255,.05);color:rgba(255,255,255,.7)}
+.lp-dash-nav.active{background:rgba(0,166,125,.2);color:#34d399}
+.lp-dash-nav-dot{width:6px;height:6px;border-radius:2px;background:currentColor;flex-shrink:0}
+.lp-dash-content{flex:1;background:#f8f9f8;overflow:hidden;position:relative}
+
+/* Dashboard view */
+.lp-dv{position:absolute;inset:0;padding:.9rem;display:flex;flex-direction:column;gap:.6rem;transition:opacity .3s,transform .3s var(--ease)}
+.lp-dv.out{opacity:0;transform:translateX(-12px);pointer-events:none}
+.lp-dv.in-from-right{opacity:0;transform:translateX(12px);pointer-events:none}
+.lp-dv.show{opacity:1;transform:translateX(0)}
+
+.lp-dv-title{font-family:'Manrope',sans-serif;font-weight:700;font-size:.78rem;color:#111;letter-spacing:-.01em}
+.lp-dv-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:.4rem}
+.lp-dv-stat{
+  background:#fff;border-radius:8px;padding:.5rem .6rem;
+  box-shadow:0 1px 4px rgba(0,0,0,.06);
+}
+.lp-dv-stat-l{font-size:.55rem;color:#6d7a73;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.lp-dv-stat-v{font-family:'Manrope',sans-serif;font-size:.95rem;font-weight:800;color:#111;margin-top:1px}
+.lp-dv-stat-t{font-size:.55rem;font-weight:700;color:#008767;margin-top:1px}
+.lp-dv-list{display:flex;flex-direction:column;gap:.3rem;flex:1}
+.lp-dv-row{
+  background:#fff;border-radius:7px;padding:.4rem .6rem;
+  display:flex;align-items:center;gap:.5rem;
+  box-shadow:0 1px 3px rgba(0,0,0,.04);
+  animation:rowIn .35s var(--ease) both;
+}
+@keyframes rowIn{from{opacity:0;transform:translateX(10px)}to{opacity:1;transform:translateX(0)}}
+.lp-dv-av{
+  width:22px;height:22px;border-radius:50%;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;
+  font-size:.5rem;font-weight:800;color:#fff;
+}
+.lp-dv-name{font-size:.65rem;font-weight:600;color:#111;flex:1}
+.lp-dv-pill{font-size:.52rem;font-weight:700;padding:2px 5px;border-radius:4px}
+.lp-dv-pill.g{background:#d1fae5;color:#065f46}
+.lp-dv-pill.a{background:#fef3c7;color:#92400e}
+.lp-dv-pill.r{background:#ffdad6;color:#93000a}
+.lp-dv-pill.b{background:#dbeafe;color:#1e40af}
+
+/* Clients view */
+.lp-cv-search{
+  height:26px;background:#fff;border-radius:7px;border:1px solid #e0e0e0;
+  display:flex;align-items:center;padding:0 .6rem;gap:.4rem;margin-bottom:.5rem;
+}
+.lp-cv-search-icon{font-size:.65rem;color:#aaa}
+.lp-cv-search-text{font-size:.62rem;color:#aaa;font-family:'Inter',sans-serif}
+.lp-cv-card{
+  background:#fff;border-radius:8px;padding:.55rem .7rem;
+  display:flex;align-items:center;gap:.55rem;
+  box-shadow:0 1px 4px rgba(0,0,0,.05);
+  animation:rowIn .4s var(--ease) both;
+}
+.lp-cv-info{flex:1}
+.lp-cv-name{font-size:.67rem;font-weight:700;color:#111}
+.lp-cv-sub{font-size:.57rem;color:#aaa;margin-top:1px}
+.lp-cv-bar-track{height:3px;background:#f0f0f0;border-radius:2px;width:60px;margin-top:4px}
+.lp-cv-bar-fill{height:3px;border-radius:2px;background:#008767;transition:width .8s var(--ease)}
+
+/* AI Plan view */
+.lp-ai-header{
+  background:linear-gradient(135deg,#0d1117,#1c1c30);
+  border-radius:8px;padding:.6rem .75rem;margin-bottom:.5rem;
+  display:flex;align-items:center;justify-content:space-between;
+}
+.lp-ai-label{font-size:.62rem;color:#34d399;font-weight:700;font-family:'Inter',sans-serif}
+.lp-ai-status{font-size:.55rem;color:rgba(255,255,255,.4);display:flex;align-items:center;gap:.3rem}
+.lp-ai-dot{width:5px;height:5px;border-radius:50%;background:#34d399;animation:aiPulse 1s ease-in-out infinite}
+@keyframes aiPulse{0%,100%{opacity:1}50%{opacity:.2}}
+.lp-ai-stream{
+  background:#fff;border-radius:8px;padding:.65rem .75rem;flex:1;
+  font-size:.63rem;color:#3d4a43;font-family:'Inter',sans-serif;line-height:1.75;
+  min-height:120px;position:relative;overflow:hidden;
+}
+.lp-ai-cursor{
+  display:inline-block;width:2px;height:.75em;background:#008767;
+  vertical-align:middle;animation:blink .7s ease-in-out infinite;margin-left:1px;
+}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+.lp-ai-tag{
+  display:inline-block;background:#d1fae5;color:#065f46;
+  font-size:.52rem;font-weight:700;padding:2px 6px;border-radius:4px;margin:2px;
 }
 
-.lp-hero-badge {
-  display: inline-flex; align-items: center; gap: 0.5rem;
-  background: rgba(0,135,103,0.1); border: 1px solid rgba(0,135,103,0.2);
-  color: var(--lp-green); font-size: 0.78rem; font-weight: 700;
-  padding: 0.35rem 0.9rem; border-radius: 999px; margin-bottom: 1.75rem;
-  animation: fadeInDown 0.7s ease both;
-  letter-spacing: 0.02em; text-transform: uppercase;
+/* Analytics view */
+.lp-an-bars{display:flex;align-items:flex-end;gap:.4rem;height:100px;padding:0 .2rem}
+.lp-an-bar-wrap{flex:1;display:flex;flex-direction:column;align-items:center;gap:.25rem}
+.lp-an-bar{
+  width:100%;border-radius:4px 4px 0 0;background:var(--g);
+  transform-origin:bottom;animation:barGrow .8s var(--ease) both;
 }
-.lp-hero-badge-dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--lp-green); animation: pulse 2s ease-in-out infinite;
-}
-@keyframes pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.5; transform: scale(1.4); }
-}
+@keyframes barGrow{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+.lp-an-label{font-size:.52rem;color:#aaa;text-align:center}
 
-.lp-hero-h1 {
-  font-family: 'Manrope', sans-serif; font-weight: 900;
-  font-size: clamp(2.5rem, 6vw, 4.5rem);
-  line-height: 1.08; letter-spacing: -0.03em;
-  color: var(--lp-navy); max-width: 800px; margin: 0 auto 1.5rem;
-  animation: fadeInUp 0.7s 0.1s ease both;
+/* ── MARQUEE ── */
+.lp-marquee-wrap{
+  background:var(--navy);border-top:1px solid var(--border);border-bottom:1px solid var(--border);
+  overflow:hidden;height:44px;display:flex;align-items:center;
 }
-.lp-hero-h1 .grad {
-  background: linear-gradient(135deg, var(--lp-green) 0%, #059669 40%, var(--lp-accent) 100%);
-  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-  background-clip: text;
+.lp-marquee-track{
+  display:flex;gap:0;white-space:nowrap;
+  animation:marquee 28s linear infinite;
 }
-.lp-hero-sub {
-  font-size: clamp(1rem, 2vw, 1.2rem); color: var(--lp-muted);
-  max-width: 560px; margin: 0 auto 2.5rem; line-height: 1.7;
-  animation: fadeInUp 0.7s 0.2s ease both;
+@keyframes marquee{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+.lp-marquee-item{
+  display:inline-flex;align-items:center;gap:.6rem;padding:0 2rem;
+  font-size:.8rem;font-weight:600;color:rgba(255,255,255,.3);
+  letter-spacing:.01em;white-space:nowrap;
 }
-.lp-hero-actions {
-  display: flex; flex-wrap: wrap; gap: 1rem; justify-content: center;
-  margin-bottom: 3.5rem; animation: fadeInUp 0.7s 0.3s ease both;
-}
-.lp-hero-cta {
-  font-family: 'Inter', sans-serif; font-size: 1rem; font-weight: 700;
-  padding: 0.875rem 2rem; border-radius: 14px; cursor: pointer;
-  border: none; transition: all 0.2s;
-}
-.lp-hero-cta.primary {
-  background: var(--lp-green); color: #fff;
-  box-shadow: 0 4px 20px rgba(0,135,103,0.35);
-}
-.lp-hero-cta.primary:hover {
-  background: var(--lp-green-d); transform: translateY(-2px);
-  box-shadow: 0 8px 30px rgba(0,135,103,0.4);
-}
-.lp-hero-cta.secondary {
-  background: rgba(255,255,255,0.8); color: var(--lp-navy);
-  border: 1px solid var(--lp-border);
-  backdrop-filter: blur(8px);
-}
-.lp-hero-cta.secondary:hover {
-  background: #fff; transform: translateY(-2px);
-  box-shadow: 0 4px 16px rgba(0,0,0,0.08);
-}
+.lp-marquee-sep{color:var(--g);font-size:.6rem}
 
-.lp-hero-trust {
-  display: flex; align-items: center; gap: 1rem; justify-content: center; flex-wrap: wrap;
-  animation: fadeInUp 0.7s 0.4s ease both;
+/* ── SECTIONS ── */
+.lp-section{padding:clamp(4rem,8vw,7rem) clamp(1.5rem,5vw,5rem);max-width:1200px;margin:0 auto}
+.lp-tag{
+  display:inline-flex;align-items:center;gap:.4rem;
+  font-size:.7rem;font-weight:700;color:var(--g);letter-spacing:.08em;
+  text-transform:uppercase;margin-bottom:1.1rem;
 }
-.lp-hero-trust-text { font-size: 0.8rem; color: var(--lp-muted); font-weight: 500; }
-.lp-hero-trust-avatars { display: flex; }
-.lp-hero-trust-avatar {
-  width: 30px; height: 30px; border-radius: 50%; border: 2px solid #fff;
-  margin-left: -8px; display: flex; align-items: center; justify-content: center;
-  font-size: 0.6rem; font-weight: 700; color: #fff;
-  background: linear-gradient(135deg, var(--lp-green), var(--lp-green-d));
+.lp-tag-line{width:20px;height:2px;background:var(--g);border-radius:1px}
+.lp-h2{
+  font-family:'Manrope',sans-serif;font-weight:900;
+  font-size:clamp(2rem,4vw,3rem);letter-spacing:-.04em;line-height:1.1;
+  color:#0d0d1a;margin-bottom:1rem;
 }
-.lp-hero-trust-avatar:nth-child(2) { background: linear-gradient(135deg, #6366f1, #4338ca); }
-.lp-hero-trust-avatar:nth-child(3) { background: linear-gradient(135deg, #ec4899, #be185d); }
-.lp-hero-trust-avatar:nth-child(4) { background: linear-gradient(135deg, #f97316, #c2410c); }
-.lp-hero-trust-avatar:first-child { margin-left: 0; }
+.lp-sub{font-size:1rem;color:#6d7a73;line-height:1.8;max-width:520px;margin-bottom:3.5rem}
 
-/* ── DASHBOARD PREVIEW ── */
-.lp-preview-wrap {
-  width: min(900px, 92%);
-  margin: 3rem auto 0;
-  animation: fadeInUp 0.8s 0.5s ease both;
+/* ── BENTO FEATURES ── */
+.lp-bento{
+  display:grid;
+  grid-template-columns:repeat(12,1fr);
+  grid-template-rows:auto auto;
+  gap:1rem;
 }
-.lp-preview {
-  border-radius: 20px; overflow: hidden;
-  box-shadow: 0 30px 80px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.05);
-  background: var(--lp-navy);
-  position: relative;
+.lp-bento-card{
+  background:#fff;border-radius:20px;padding:2rem;
+  border:1px solid #eaeaea;position:relative;overflow:hidden;
+  transform:translateY(30px);opacity:0;
+  transition:transform .6s var(--ease),opacity .6s,box-shadow .3s;
 }
-.lp-preview-bar {
-  height: 36px; background: #111827; display: flex; align-items: center;
-  padding: 0 1rem; gap: 0.5rem;
+.lp-bento-card.visible{transform:translateY(0);opacity:1}
+.lp-bento-card:hover{box-shadow:0 16px 48px rgba(0,0,0,.09)}
+.lp-bento-card::before{
+  content:'';position:absolute;inset:0;opacity:0;
+  background:radial-gradient(circle at var(--cx,50%) var(--cy,50%), rgba(0,166,125,.06) 0%, transparent 60%);
+  transition:opacity .4s;pointer-events:none;
 }
-.lp-preview-dot {
-  width: 10px; height: 10px; border-radius: 50%;
+.lp-bento-card:hover::before{opacity:1}
+.lp-b1{grid-column:span 7}
+.lp-b2{grid-column:span 5}
+.lp-b3{grid-column:span 4}
+.lp-b4{grid-column:span 4}
+.lp-b5{grid-column:span 4}
+@media(max-width:800px){
+  .lp-b1,.lp-b2,.lp-b3,.lp-b4,.lp-b5{grid-column:span 12}
 }
-.lp-preview-dot:nth-child(1) { background: #ef4444; }
-.lp-preview-dot:nth-child(2) { background: #f59e0b; }
-.lp-preview-dot:nth-child(3) { background: #10b981; }
-.lp-preview-url {
-  flex: 1; height: 20px; background: #1f2937; border-radius: 4px;
-  margin-left: 0.75rem; display: flex; align-items: center; padding: 0 0.5rem;
-  font-size: 0.65rem; color: #6b7280;
+.lp-bento-icon{
+  width:44px;height:44px;border-radius:12px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:1.3rem;margin-bottom:1.25rem;
 }
-.lp-preview-screen {
-  display: flex; height: 380px;
-}
-.lp-preview-sidebar {
-  width: 200px; background: #1a1a2e; flex-shrink: 0;
-  padding: 1rem 0.75rem; display: flex; flex-direction: column; gap: 0.4rem;
-}
-.lp-preview-sidebar-logo {
-  font-family: 'Manrope', sans-serif; font-weight: 800; color: #fff;
-  font-size: 1rem; padding: 0.5rem 0.5rem 1rem;
-}
-.lp-preview-nav-item {
-  height: 34px; border-radius: 8px; display: flex; align-items: center;
-  padding: 0 0.75rem; font-size: 0.75rem; color: rgba(255,255,255,0.5);
-  gap: 0.5rem; cursor: default;
-}
-.lp-preview-nav-item.active {
-  background: rgba(0,135,103,0.25); color: #6ee7b7;
-}
-.lp-preview-nav-dot { width: 8px; height: 8px; border-radius: 2px; background: currentColor; flex-shrink: 0; }
-.lp-preview-content {
-  flex: 1; background: #f8f9f8; padding: 1.25rem; overflow: hidden;
-  display: flex; flex-direction: column; gap: 0.75rem;
-}
-.lp-preview-header {
-  display: flex; align-items: center; justify-content: space-between;
-}
-.lp-preview-title { font-family: 'Manrope', sans-serif; font-weight: 700; font-size: 0.9rem; color: #111; }
-.lp-preview-btn {
-  height: 26px; padding: 0 0.75rem; background: #008767; border-radius: 6px;
-  font-size: 0.65rem; color: #fff; font-weight: 600; display: flex; align-items: center;
-}
-.lp-preview-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; }
-.lp-preview-stat {
-  background: #fff; border-radius: 10px; padding: 0.6rem 0.75rem;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
-  animation: statPop 0.4s ease both;
-}
-.lp-preview-stat:nth-child(1) { animation-delay: 0.8s; }
-.lp-preview-stat:nth-child(2) { animation-delay: 0.9s; }
-.lp-preview-stat:nth-child(3) { animation-delay: 1.0s; }
-.lp-preview-stat:nth-child(4) { animation-delay: 1.1s; }
-@keyframes statPop {
-  from { opacity: 0; transform: scale(0.9) translateY(8px); }
-  to   { opacity: 1; transform: scale(1) translateY(0); }
-}
-.lp-preview-stat-label { font-size: 0.6rem; color: #6d7a73; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
-.lp-preview-stat-value { font-family: 'Manrope', sans-serif; font-size: 1rem; font-weight: 800; color: #111; margin-top: 2px; }
-.lp-preview-stat-trend { font-size: 0.6rem; color: #008767; font-weight: 600; }
-.lp-preview-clients { display: flex; flex-direction: column; gap: 0.35rem; flex: 1; }
-.lp-preview-client-row {
-  background: #fff; border-radius: 8px; padding: 0.5rem 0.75rem;
-  display: flex; align-items: center; gap: 0.6rem;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-  animation: rowSlide 0.4s ease both;
-}
-.lp-preview-client-row:nth-child(1) { animation-delay: 1.2s; }
-.lp-preview-client-row:nth-child(2) { animation-delay: 1.3s; }
-.lp-preview-client-row:nth-child(3) { animation-delay: 1.4s; }
-@keyframes rowSlide {
-  from { opacity: 0; transform: translateX(20px); }
-  to   { opacity: 1; transform: translateX(0); }
-}
-.lp-preview-avatar {
-  width: 24px; height: 24px; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 0.55rem; font-weight: 700; color: #fff; flex-shrink: 0;
-}
-.lp-preview-client-name { font-size: 0.72rem; font-weight: 600; color: #111; flex: 1; }
-.lp-preview-pill {
-  font-size: 0.58rem; font-weight: 700; padding: 2px 6px; border-radius: 4px;
-}
-.lp-preview-pill.green { background: #d1fae5; color: #065f46; }
-.lp-preview-pill.amber { background: #fef3c7; color: #92400e; }
-.lp-preview-pill.red   { background: #ffdad6; color: #93000a; }
+.lp-bento-h{font-family:'Manrope',sans-serif;font-weight:800;font-size:1.1rem;color:#0d0d1a;margin-bottom:.5rem}
+.lp-bento-p{font-size:.88rem;color:#6d7a73;line-height:1.7}
+.lp-bento-accent{position:absolute;bottom:0;right:0;width:120px;height:120px;opacity:.06;pointer-events:none}
 
-/* ── STATS BAR ── */
-.lp-stats {
-  background: var(--lp-navy); padding: 3.5rem 2rem;
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 2rem; text-align: center;
+/* large card extra */
+.lp-bento-mini-preview{
+  margin-top:1.5rem;background:#f8f9f8;border-radius:12px;padding:1rem;
+  border:1px solid #eaeaea;
 }
-.lp-stat-num {
-  font-family: 'Manrope', sans-serif; font-weight: 900;
-  font-size: 2.5rem; color: #fff; letter-spacing: -0.03em;
-  line-height: 1;
+.lp-mini-stat-row{display:flex;gap:.6rem;margin-bottom:.5rem}
+.lp-mini-stat{
+  flex:1;background:#fff;border-radius:8px;padding:.5rem .6rem;
+  box-shadow:0 1px 3px rgba(0,0,0,.05);
 }
-.lp-stat-num span { color: var(--lp-green); }
-.lp-stat-label { font-size: 0.85rem; color: rgba(255,255,255,0.5); margin-top: 0.4rem; font-weight: 500; }
+.lp-mini-stat-l{font-size:.55rem;color:#aaa;font-weight:600;text-transform:uppercase}
+.lp-mini-stat-v{font-family:'Manrope',sans-serif;font-size:.88rem;font-weight:800;color:#111}
+.lp-mini-bar{height:4px;background:#f0f0f0;border-radius:2px;margin-top:.4rem}
+.lp-mini-bar-fill{height:4px;border-radius:2px;background:linear-gradient(90deg,var(--g),var(--gl))}
 
-/* ── SECTION SHARED ── */
-.lp-section { padding: 6rem 2rem; max-width: 1100px; margin: 0 auto; }
-.lp-section-tag {
-  display: inline-block; font-size: 0.75rem; font-weight: 700;
-  color: var(--lp-green); text-transform: uppercase; letter-spacing: 0.08em;
-  margin-bottom: 1rem;
+/* ── DARK STATS ── */
+.lp-stats-dark{
+  background:var(--navy);padding:5rem clamp(1.5rem,5vw,5rem);
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
+  gap:3rem;text-align:center;position:relative;overflow:hidden;
 }
-.lp-section-h2 {
-  font-family: 'Manrope', sans-serif; font-weight: 800;
-  font-size: clamp(1.75rem, 4vw, 2.75rem);
-  color: var(--lp-navy); letter-spacing: -0.025em; line-height: 1.15;
-  margin-bottom: 1rem;
+.lp-stats-dark::before{
+  content:'';position:absolute;inset:0;
+  background:
+    radial-gradient(ellipse 50% 60% at 30% 50%, rgba(0,166,125,.1) 0%, transparent 70%),
+    radial-gradient(ellipse 40% 50% at 80% 50%, rgba(99,102,241,.08) 0%, transparent 70%);
+  pointer-events:none;
 }
-.lp-section-sub {
-  font-size: 1.05rem; color: var(--lp-muted); line-height: 1.7;
-  max-width: 540px; margin-bottom: 3.5rem;
+.lp-stat-num{
+  font-family:'Manrope',sans-serif;font-weight:900;
+  font-size:clamp(2.5rem,5vw,3.5rem);color:#fff;letter-spacing:-.04em;
+  line-height:1;margin-bottom:.4rem;
 }
+.lp-stat-num em{color:var(--gl);font-style:normal}
+.lp-stat-l{font-size:.85rem;color:rgba(255,255,255,.4);font-weight:500}
 
-/* ── FEATURES ── */
-.lp-features-grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 1.25rem;
+/* ── TESTIMONIALS CAROUSEL ── */
+.lp-testi-wrap{overflow:hidden}
+.lp-testi-track{
+  display:flex;gap:1.25rem;
+  transition:transform .6s var(--ease);
 }
-.lp-feature-card {
-  background: #fff; border-radius: 20px; padding: 2rem;
-  border: 1px solid var(--lp-border);
-  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-  transition: transform 0.25s, box-shadow 0.25s;
-  opacity: 0; transform: translateY(30px);
+.lp-testi-card{
+  flex:0 0 calc(33.333% - .85rem);background:#fff;border-radius:20px;
+  padding:2rem;border:1px solid #eaeaea;
+  transform:translateY(30px);opacity:0;
+  transition:transform .6s var(--ease),opacity .6s,box-shadow .3s;
 }
-.lp-feature-card.visible {
-  animation: revealUp 0.55s ease forwards;
+@media(max-width:900px){.lp-testi-card{flex:0 0 calc(85% - .5rem)}}
+.lp-testi-card.visible{transform:translateY(0);opacity:1}
+.lp-testi-card:hover{box-shadow:0 12px 40px rgba(0,0,0,.08)}
+.lp-testi-stars{color:#f59e0b;font-size:.8rem;margin-bottom:1rem;letter-spacing:.1em}
+.lp-testi-q{
+  font-size:.95rem;color:#3d4a43;line-height:1.75;
+  margin-bottom:1.5rem;font-style:italic;
 }
-.lp-feature-card:hover {
-  transform: translateY(-4px);
-  box-shadow: 0 12px 40px rgba(0,0,0,0.1);
+.lp-testi-author{display:flex;align-items:center;gap:.75rem}
+.lp-testi-av{
+  width:38px;height:38px;border-radius:50%;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;
+  font-size:.75rem;font-weight:800;color:#fff;
 }
-.lp-feature-icon {
-  width: 48px; height: 48px; border-radius: 14px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 1.4rem; margin-bottom: 1.25rem;
+.lp-testi-name{font-family:'Manrope',sans-serif;font-weight:700;font-size:.88rem;color:#0d0d1a}
+.lp-testi-role{font-size:.75rem;color:#aaa;margin-top:1px}
+.lp-testi-controls{display:flex;gap:.75rem;margin-top:2rem;align-items:center}
+.lp-testi-dot{
+  width:8px;height:8px;border-radius:50%;background:#e0e0e0;cursor:pointer;
+  transition:background .3s,transform .3s;border:none;
 }
-.lp-feature-h3 {
-  font-family: 'Manrope', sans-serif; font-weight: 700; font-size: 1.1rem;
-  color: var(--lp-navy); margin-bottom: 0.5rem;
-}
-.lp-feature-p { font-size: 0.9rem; color: var(--lp-muted); line-height: 1.65; }
-
-/* ── HOW IT WORKS ── */
-.lp-how { background: linear-gradient(135deg, #f0fdf9 0%, #fff 100%); }
-.lp-how-inner { padding: 6rem 2rem; max-width: 1100px; margin: 0 auto; }
-.lp-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 2rem; margin-top: 3.5rem; }
-.lp-step {
-  text-align: center; padding: 2rem 1.5rem;
-  opacity: 0; transform: translateY(30px);
-}
-.lp-step.visible { animation: revealUp 0.55s ease forwards; }
-.lp-step-num {
-  width: 56px; height: 56px; border-radius: 16px;
-  background: var(--lp-green); color: #fff;
-  font-family: 'Manrope', sans-serif; font-weight: 900; font-size: 1.4rem;
-  display: flex; align-items: center; justify-content: center;
-  margin: 0 auto 1.5rem;
-  box-shadow: 0 4px 20px rgba(0,135,103,0.35);
-}
-.lp-step-h3 {
-  font-family: 'Manrope', sans-serif; font-weight: 700; font-size: 1.15rem;
-  color: var(--lp-navy); margin-bottom: 0.6rem;
-}
-.lp-step-p { font-size: 0.9rem; color: var(--lp-muted); line-height: 1.65; }
-
-/* ── TESTIMONIALS ── */
-.lp-testimonials-grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 1.25rem;
-}
-.lp-testimonial {
-  background: #fff; border-radius: 20px; padding: 1.75rem;
-  border: 1px solid var(--lp-border);
-  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-  opacity: 0; transform: translateY(30px);
-}
-.lp-testimonial.visible { animation: revealUp 0.55s ease forwards; }
-.lp-testimonial-stars { color: #f59e0b; font-size: 0.85rem; margin-bottom: 1rem; }
-.lp-testimonial-quote {
-  font-size: 0.95rem; color: #3d4a43; line-height: 1.7;
-  margin-bottom: 1.25rem; font-style: italic;
-}
-.lp-testimonial-author { display: flex; align-items: center; gap: 0.75rem; }
-.lp-testimonial-avatar {
-  width: 40px; height: 40px; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 0.8rem; font-weight: 700; color: #fff; flex-shrink: 0;
-}
-.lp-testimonial-name { font-family: 'Manrope', sans-serif; font-weight: 700; font-size: 0.9rem; color: var(--lp-navy); }
-.lp-testimonial-role { font-size: 0.78rem; color: var(--lp-muted); }
+.lp-testi-dot.active{background:var(--g);transform:scale(1.3)}
 
 /* ── PRICING ── */
-.lp-pricing-grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 1.25rem; align-items: start;
+.lp-pricing-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1.25rem;align-items:stretch}
+.lp-price-card{
+  background:#fff;border-radius:24px;padding:2.25rem;
+  border:2px solid #eaeaea;position:relative;
+  transform:translateY(30px);opacity:0;
+  transition:transform .6s var(--ease),opacity .6s,box-shadow .25s,border-color .25s;
 }
-.lp-pricing-card {
-  background: #fff; border-radius: 24px; padding: 2.25rem 2rem;
-  border: 2px solid var(--lp-border);
-  opacity: 0; transform: translateY(30px);
-  transition: transform 0.25s, box-shadow 0.25s;
+.lp-price-card.visible{transform:translateY(0);opacity:1}
+.lp-price-card:hover{box-shadow:0 16px 48px rgba(0,0,0,.09);border-color:#d0d0d0}
+.lp-price-card.featured{border-color:transparent;padding:2px}
+.lp-price-card.featured:hover{box-shadow:0 20px 60px rgba(0,166,125,.2)}
+.lp-price-card-inner{
+  border-radius:22px;background:#fff;padding:2.25rem;height:100%;
+  display:flex;flex-direction:column;
 }
-.lp-pricing-card.visible { animation: revealUp 0.55s ease forwards; }
-.lp-pricing-card:hover { transform: translateY(-4px); box-shadow: 0 16px 48px rgba(0,0,0,0.1); }
-.lp-pricing-card.featured {
-  border-color: var(--lp-green);
-  box-shadow: 0 8px 40px rgba(0,135,103,0.18);
-  position: relative;
+.lp-price-card.featured .lp-price-card-inner{
+  background:linear-gradient(160deg,#fff 0%,#f0fdf9 100%);
 }
-.lp-pricing-card.featured:hover { transform: translateY(-6px); box-shadow: 0 20px 60px rgba(0,135,103,0.22); }
-.lp-pricing-badge {
-  position: absolute; top: -14px; left: 50%; transform: translateX(-50%);
-  background: var(--lp-green); color: #fff; font-size: 0.7rem; font-weight: 700;
-  padding: 0.3rem 1rem; border-radius: 999px; white-space: nowrap;
-  letter-spacing: 0.04em; text-transform: uppercase;
+.lp-price-animated-border{
+  position:absolute;inset:0;border-radius:24px;
+  background:conic-gradient(from var(--angle,0deg), var(--g) 0%, var(--gl) 25%, #6ee7b7 50%, var(--g) 100%);
+  z-index:-1;
+  animation:rotateBorder 3s linear infinite;
 }
-.lp-pricing-tier { font-family: 'Manrope', sans-serif; font-weight: 800; font-size: 1.1rem; color: var(--lp-navy); margin-bottom: 0.35rem; }
-.lp-pricing-desc { font-size: 0.85rem; color: var(--lp-muted); margin-bottom: 1.5rem; }
-.lp-pricing-price { display: flex; align-items: baseline; gap: 0.25rem; margin-bottom: 2rem; }
-.lp-pricing-currency { font-size: 1.5rem; font-weight: 700; color: var(--lp-navy); }
-.lp-pricing-amount {
-  font-family: 'Manrope', sans-serif; font-size: 3.5rem; font-weight: 900;
-  color: var(--lp-navy); letter-spacing: -0.04em; line-height: 1;
+@property --angle{syntax:'<angle>';initial-value:0deg;inherits:false}
+@keyframes rotateBorder{to{--angle:360deg}}
+.lp-price-badge{
+  display:inline-block;background:linear-gradient(135deg,var(--g),var(--gl));
+  color:#fff;font-size:.68rem;font-weight:700;
+  padding:.25rem .8rem;border-radius:999px;margin-bottom:1rem;
+  letter-spacing:.04em;text-transform:uppercase;
 }
-.lp-pricing-period { font-size: 0.85rem; color: var(--lp-muted); }
-.lp-pricing-features { list-style: none; display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 2rem; }
-.lp-pricing-feature {
-  display: flex; align-items: center; gap: 0.6rem;
-  font-size: 0.875rem; color: #3d4a43;
+.lp-price-tier{font-family:'Manrope',sans-serif;font-weight:800;font-size:1.1rem;color:#0d0d1a;margin-bottom:.3rem}
+.lp-price-desc{font-size:.83rem;color:#aaa;margin-bottom:1.5rem}
+.lp-price-num{display:flex;align-items:baseline;gap:.2rem;margin-bottom:2rem}
+.lp-price-cur{font-size:1.4rem;font-weight:700;color:#0d0d1a}
+.lp-price-val{font-family:'Manrope',sans-serif;font-size:3.2rem;font-weight:900;color:#0d0d1a;letter-spacing:-.05em;line-height:1}
+.lp-price-period{font-size:.83rem;color:#aaa}
+.lp-price-features{list-style:none;display:flex;flex-direction:column;gap:.7rem;flex:1;margin-bottom:1.75rem}
+.lp-price-feat{display:flex;align-items:center;gap:.55rem;font-size:.875rem;color:#3d4a43}
+.lp-price-check{
+  width:18px;height:18px;border-radius:50%;background:var(--g);
+  color:#fff;display:flex;align-items:center;justify-content:center;
+  font-size:.6rem;flex-shrink:0;
 }
-.lp-pricing-feature-check {
-  width: 20px; height: 20px; border-radius: 50%;
-  background: var(--lp-green); color: #fff;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 0.65rem; flex-shrink: 0;
+.lp-price-cta{
+  width:100%;padding:.85rem;border-radius:12px;
+  font-family:'Inter',sans-serif;font-size:.9rem;font-weight:700;
+  cursor:pointer;border:none;transition:all .2s;
 }
-.lp-pricing-cta {
-  width: 100%; padding: 0.875rem; border-radius: 12px;
-  font-family: 'Inter', sans-serif; font-size: 0.9rem; font-weight: 700;
-  cursor: pointer; border: none; transition: all 0.2s;
-}
-.lp-pricing-cta.outline {
-  background: transparent; color: var(--lp-green);
-  border: 2px solid var(--lp-green);
-}
-.lp-pricing-cta.outline:hover { background: rgba(0,135,103,0.06); }
-.lp-pricing-cta.solid {
-  background: var(--lp-green); color: #fff;
-  box-shadow: 0 4px 16px rgba(0,135,103,0.3);
-}
-.lp-pricing-cta.solid:hover {
-  background: var(--lp-green-d); transform: translateY(-1px);
-  box-shadow: 0 6px 24px rgba(0,135,103,0.35);
-}
+.lp-price-cta.outline{background:transparent;color:var(--g);border:2px solid var(--g)}
+.lp-price-cta.outline:hover{background:rgba(0,166,125,.06)}
+.lp-price-cta.solid{background:var(--g);color:#fff;box-shadow:0 4px 20px rgba(0,166,125,.3)}
+.lp-price-cta.solid:hover{background:var(--gd);transform:translateY(-1px);box-shadow:0 6px 28px rgba(0,166,125,.4)}
 
 /* ── FINAL CTA ── */
-.lp-cta-section {
-  margin: 0 2rem 6rem;
-  border-radius: 28px;
-  background: linear-gradient(135deg, var(--lp-navy) 0%, #1e3a5f 50%, var(--lp-green-d) 100%);
-  padding: 5rem 3rem; text-align: center; overflow: hidden; position: relative;
+.lp-final-cta{
+  margin:0 clamp(1rem,3vw,3rem) clamp(3rem,6vw,6rem);
+  border-radius:28px;
+  background:var(--navy);
+  padding:clamp(3rem,6vw,6rem) clamp(2rem,5vw,4rem);
+  text-align:center;position:relative;overflow:hidden;
 }
-.lp-cta-glow {
-  position: absolute; width: 400px; height: 400px; border-radius: 50%;
-  background: radial-gradient(circle, rgba(0,135,103,0.3), transparent 70%);
-  pointer-events: none;
+.lp-final-glow{
+  position:absolute;width:500px;height:500px;border-radius:50%;pointer-events:none;
+  filter:blur(80px);
 }
-.lp-cta-glow:nth-child(1) { top: -100px; right: -100px; }
-.lp-cta-glow:nth-child(2) { bottom: -100px; left: -100px; }
-.lp-cta-h2 {
-  font-family: 'Manrope', sans-serif; font-weight: 900;
-  font-size: clamp(1.75rem, 4vw, 2.75rem); color: #fff;
-  letter-spacing: -0.025em; margin-bottom: 1rem; position: relative;
+.lp-final-glow:nth-child(1){background:rgba(0,166,125,.2);top:-150px;left:-100px;animation:glowDrift 8s ease-in-out infinite}
+.lp-final-glow:nth-child(2){background:rgba(99,102,241,.15);bottom:-150px;right:-100px;animation:glowDrift 10s 2s ease-in-out infinite reverse}
+@keyframes glowDrift{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(40px,-30px) scale(1.1)}}
+.lp-final-h{
+  font-family:'Manrope',sans-serif;font-weight:900;
+  font-size:clamp(2rem,5vw,3.5rem);color:#fff;
+  letter-spacing:-.04em;line-height:1.1;margin-bottom:1rem;position:relative;z-index:1;
 }
-.lp-cta-sub { font-size: 1.05rem; color: rgba(255,255,255,0.65); margin-bottom: 2.5rem; position: relative; }
-.lp-cta-actions { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; position: relative; }
-.lp-cta-btn {
-  padding: 0.9rem 2rem; border-radius: 14px; font-family: 'Inter', sans-serif;
-  font-size: 1rem; font-weight: 700; cursor: pointer; border: none; transition: all 0.2s;
+.lp-final-sub{font-size:1.05rem;color:rgba(255,255,255,.5);margin-bottom:2.5rem;position:relative;z-index:1}
+.lp-final-actions{display:flex;gap:1rem;justify-content:center;flex-wrap:wrap;position:relative;z-index:1}
+.lp-final-btn{
+  padding:.9rem 2.25rem;border-radius:14px;
+  font-family:'Inter',sans-serif;font-size:.95rem;font-weight:700;
+  cursor:pointer;border:none;transition:all .25s var(--ease2);
 }
-.lp-cta-btn.white {
-  background: #fff; color: var(--lp-navy);
-  box-shadow: 0 4px 20px rgba(0,0,0,0.15);
-}
-.lp-cta-btn.white:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(0,0,0,0.2); }
-.lp-cta-btn.bordered { background: transparent; color: #fff; border: 2px solid rgba(255,255,255,0.4); }
-.lp-cta-btn.bordered:hover { border-color: rgba(255,255,255,0.8); background: rgba(255,255,255,0.08); }
+.lp-final-btn.white{background:#fff;color:#0d0d1a;box-shadow:0 4px 24px rgba(0,0,0,.2)}
+.lp-final-btn.white:hover{transform:translateY(-2px) scale(1.02);box-shadow:0 8px 40px rgba(0,0,0,.3)}
+.lp-final-btn.ghost2{background:rgba(255,255,255,.07);color:rgba(255,255,255,.8);border:1px solid rgba(255,255,255,.15)}
+.lp-final-btn.ghost2:hover{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.3)}
 
 /* ── FOOTER ── */
-.lp-footer {
-  background: var(--lp-navy); color: rgba(255,255,255,0.6);
-  padding: 3rem 2rem 2rem;
-}
-.lp-footer-inner { max-width: 1100px; margin: 0 auto; }
-.lp-footer-top {
-  display: flex; justify-content: space-between; align-items: flex-start;
-  flex-wrap: wrap; gap: 2rem; padding-bottom: 2.5rem;
-  border-bottom: 1px solid rgba(255,255,255,0.08);
-}
-.lp-footer-brand { max-width: 280px; }
-.lp-footer-brand-name {
-  display: flex; align-items: center; gap: 0.6rem;
-  font-family: 'Manrope', sans-serif; font-weight: 800; font-size: 1.1rem;
-  color: #fff; margin-bottom: 0.75rem;
-}
-.lp-footer-brand-p { font-size: 0.85rem; line-height: 1.65; }
-.lp-footer-cols { display: flex; gap: 4rem; flex-wrap: wrap; }
-.lp-footer-col-h { font-family: 'Manrope', sans-serif; font-weight: 700; color: #fff; font-size: 0.85rem; margin-bottom: 1rem; }
-.lp-footer-col-links { display: flex; flex-direction: column; gap: 0.6rem; }
-.lp-footer-col-links a {
-  font-size: 0.83rem; color: rgba(255,255,255,0.5); text-decoration: none;
-  transition: color 0.2s;
-}
-.lp-footer-col-links a:hover { color: rgba(255,255,255,0.9); }
-.lp-footer-bottom {
-  display: flex; justify-content: space-between; align-items: center;
-  flex-wrap: wrap; gap: 1rem; padding-top: 1.75rem;
-}
-.lp-footer-copy { font-size: 0.8rem; }
-.lp-footer-legal { display: flex; gap: 1.5rem; }
-.lp-footer-legal a { font-size: 0.8rem; color: rgba(255,255,255,0.4); text-decoration: none; }
-.lp-footer-legal a:hover { color: rgba(255,255,255,0.8); }
+.lp-footer{background:var(--navy2);border-top:1px solid var(--border);padding:4rem clamp(1.5rem,5vw,5rem) 2.5rem}
+.lp-footer-inner{max-width:1200px;margin:0 auto}
+.lp-footer-top{display:flex;justify-content:space-between;flex-wrap:wrap;gap:3rem;padding-bottom:3rem;border-bottom:1px solid var(--border)}
+.lp-footer-brand{max-width:280px}
+.lp-footer-brand-row{display:flex;align-items:center;gap:.55rem;margin-bottom:.85rem}
+.lp-footer-brand-name{font-family:'Manrope',sans-serif;font-weight:800;font-size:1.1rem;color:#fff}
+.lp-footer-brand-p{font-size:.83rem;color:rgba(255,255,255,.35);line-height:1.7}
+.lp-footer-cols{display:flex;gap:4rem;flex-wrap:wrap}
+.lp-footer-col-h{font-family:'Manrope',sans-serif;font-weight:700;font-size:.83rem;color:#fff;margin-bottom:1rem}
+.lp-footer-col-links{display:flex;flex-direction:column;gap:.55rem}
+.lp-footer-col-links a{font-size:.81rem;color:rgba(255,255,255,.35);text-decoration:none;transition:color .2s}
+.lp-footer-col-links a:hover{color:rgba(255,255,255,.8)}
+.lp-footer-bottom{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:1rem;padding-top:2rem}
+.lp-footer-copy{font-size:.78rem;color:rgba(255,255,255,.25)}
+.lp-footer-legal{display:flex;gap:2rem}
+.lp-footer-legal a{font-size:.78rem;color:rgba(255,255,255,.25);text-decoration:none;transition:color .2s}
+.lp-footer-legal a:hover{color:rgba(255,255,255,.6)}
 
-/* ── ANIMATIONS ── */
-@keyframes fadeInDown {
-  from { opacity: 0; transform: translateY(-16px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-@keyframes fadeInUp {
-  from { opacity: 0; transform: translateY(24px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-@keyframes revealUp {
-  from { opacity: 0; transform: translateY(30px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
-/* ── RESPONSIVE ── */
-@media (max-width: 700px) {
-  .lp-nav-links { display: none; }
-  .lp-preview-sidebar { display: none; }
-  .lp-preview-screen { height: 280px; }
-  .lp-stats { grid-template-columns: 1fr 1fr; }
-  .lp-footer-cols { gap: 2rem; }
-  .lp-pricing-card.featured { margin-top: 0; }
-}
+/* ── UTIL ANIMATIONS ── */
+@keyframes floatY{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
+@keyframes fadeSlideUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
 `;
 
-type Props = {
-  onSignIn: () => void;
-  onGetStarted: () => void;
-};
+/* ─────────────────────────────────────────────────────────────────
+   TYPES & DATA
+───────────────────────────────────────────────────────────────── */
+type Props = { onSignIn: () => void; onGetStarted: () => void };
+type DashView = "dashboard" | "clients" | "ai" | "analytics";
 
-const features = [
-  {
-    icon: "👥",
-    color: "#d1fae5",
-    title: "Client Management",
-    desc: "Keep every client's goals, nutrition targets, and training history in one clean dashboard. No more juggling spreadsheets.",
-  },
-  {
-    icon: "📋",
-    color: "#dbeafe",
-    title: "AI-Generated Plans",
-    desc: "Generate personalised workout and nutrition plans in seconds. Review, edit, and approve before sending to clients.",
-  },
-  {
-    icon: "📊",
-    color: "#fce7f3",
-    title: "Progress Tracking",
-    desc: "Body metrics, adherence scores, and weekly check-ins give you a live view of every client's momentum.",
-  },
-  {
-    icon: "💬",
-    color: "#fef3c7",
-    title: "Messaging & Check-ins",
-    desc: "Structured weekly check-ins and direct messaging keep communication professional and consistent.",
-  },
-  {
-    icon: "💰",
-    color: "#ede9fe",
-    title: "Billing & Renewals",
-    desc: "Track subscriptions, flag overdue payments, and get renewal alerts before revenue slips through the cracks.",
-  },
-  {
-    icon: "📈",
-    color: "#ffedd5",
-    title: "Analytics Dashboard",
-    desc: "Morning briefings, revenue snapshots, and at-risk client alerts so you start every day with clarity.",
-  },
+const DASH_NAVS: { id: DashView; label: string }[] = [
+  { id: "dashboard", label: "Dashboard" },
+  { id: "clients",   label: "Clients" },
+  { id: "ai",        label: "AI Plans" },
+  { id: "analytics", label: "Analytics" },
 ];
 
-const steps = [
-  { n: "1", title: "Create your workspace", desc: "Set up your brand, add your coaching niche, and invite yourself in under 5 minutes." },
-  { n: "2", title: "Add your clients", desc: "Import from CSV or add manually. Set goals, nutrition targets, and subscription pricing." },
-  { n: "3", title: "Deliver at scale", desc: "AI-generated plans, automated check-ins, and a morning dashboard keep you on top of everything." },
+const CLIENTS = [
+  { name: "Jessica K.", goal: "Fat Loss",    status: "g", adh: 92, color: "#008767" },
+  { name: "Marcus T.",  goal: "Strength",    status: "a", adh: 67, color: "#6366f1" },
+  { name: "Sarah R.",   goal: "Endurance",   status: "r", adh: 41, color: "#ec4899" },
+  { name: "Dan W.",     goal: "Hypertrophy", status: "b", adh: 88, color: "#f97316" },
 ];
 
-const testimonials = [
+const AI_TEXT = `Week 1 — Foundation Phase
+
+Monday: Upper Body Strength
+• Bench Press  4×6  @75% 1RM
+• Pull-ups     4×8  bodyweight
+• DB Shoulder  3×12
+
+Nutrition: 2,400 kcal | 185g protein
+Pre-workout: 30g oats + 25g whey`;
+
+const ANALYTICS_BARS = [
+  { label: "Mon", h: 65 }, { label: "Tue", h: 82 }, { label: "Wed", h: 48 },
+  { label: "Thu", h: 91 }, { label: "Fri", h: 75 }, { label: "Sat", h: 88 },
+  { label: "Sun", h: 54 },
+];
+
+const TESTIMONIALS = [
   {
-    quote: "CoachOS cut my admin time in half. I went from drowning in DMs to running 40+ clients without missing a beat.",
-    name: "Sarah K.", role: "Online Fitness Coach, 43 clients",
-    initials: "SK", color: "linear-gradient(135deg, #008767, #065f46)",
+    q: "Went from spending 15 hours a week on admin to under 3. My clients get faster responses, better programmes, and I actually enjoy coaching again.",
+    name: "Sarah K.", role: "Body Composition Coach · 47 clients",
+    av: "SK", c: "linear-gradient(135deg,#008767,#065f46)",
   },
   {
-    quote: "The AI plan generator is scary good. I tweak 10% of what it produces — my clients think I'm a genius.",
+    q: "The AI plan generator understands periodisation. I've tried 6 other platforms — nothing comes close to the depth CoachOS gives you out of the box.",
     name: "Marcus T.", role: "Strength & Conditioning Coach",
-    initials: "MT", color: "linear-gradient(135deg, #6366f1, #4338ca)",
+    av: "MT", c: "linear-gradient(135deg,#6366f1,#4338ca)",
   },
   {
-    quote: "Finally a platform built for coaches, not gym chains. The morning dashboard alone is worth the subscription.",
-    name: "Priya N.", role: "Nutrition & Lifestyle Coach",
-    initials: "PN", color: "linear-gradient(135deg, #ec4899, #be185d)",
+    q: "I used to dread Monday mornings. Now I open CoachOS, see exactly who needs attention, and my whole week is planned in 10 minutes. Game-changer.",
+    name: "Priya N.", role: "Online Nutrition Coach · 32 clients",
+    av: "PN", c: "linear-gradient(135deg,#ec4899,#be185d)",
+  },
+  {
+    q: "Revenue up 34% in 4 months. When you stop losing clients to disorganisation, the compound effect is incredible.",
+    name: "Jake O.", role: "Performance Coach",
+    av: "JO", c: "linear-gradient(135deg,#f97316,#c2410c)",
   },
 ];
 
-const plans = [
-  {
-    tier: "Starter", desc: "For coaches just getting started",
-    price: "29", features: ["Up to 10 clients", "AI plan generation", "Check-in forms", "Basic analytics", "Email support"],
-    cta: "Start free trial", variant: "outline" as const, featured: false,
-  },
-  {
-    tier: "Pro", desc: "For established coaches scaling up",
-    price: "79", features: ["Unlimited clients", "Priority AI generation", "Group programs", "Revenue tracking", "Habit tracking", "Priority support"],
-    cta: "Get started free", variant: "solid" as const, featured: true,
-  },
-  {
-    tier: "Agency", desc: "For multi-coach businesses",
-    price: "199", features: ["Multiple coach seats", "White-label branding", "Custom integrations", "Advanced analytics", "Dedicated account manager"],
-    cta: "Talk to sales", variant: "outline" as const, featured: false,
-  },
+const MARQUEE_ITEMS = [
+  "Client Management","AI Plan Generation","Progress Tracking",
+  "Check-in Forms","Revenue Analytics","Habit Coaching",
+  "Group Programmes","Exercise Library","Nutrition Planning",
+  "Billing Automation","Morning Briefings","Proof Cards",
 ];
 
-function useReveal() {
+/* ─────────────────────────────────────────────────────────────────
+   HOOKS
+───────────────────────────────────────────────────────────────── */
+function useInView(threshold = 0.15) {
   const ref = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
   useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
+    const el = ref.current; if (!el) return;
     const obs = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) { setVisible(true); obs.disconnect(); } },
-      { threshold: 0.15 }
+      ([e]) => { if (e.isIntersecting) { setVisible(true); obs.disconnect(); } },
+      { threshold }
     );
     obs.observe(el);
     return () => obs.disconnect();
-  }, []);
+  }, [threshold]);
   return { ref, visible };
 }
 
-function AnimatedNumber({ target, suffix = "" }: { target: number; suffix?: string }) {
+function useSpringCounter(target: number, active: boolean, duration = 1800) {
   const [val, setVal] = useState(0);
-  const { ref, visible } = useReveal();
   useEffect(() => {
-    if (!visible) return;
-    const dur = 1800;
+    if (!active) return;
     const start = Date.now();
     const tick = () => {
-      const p = Math.min(1, (Date.now() - start) / dur);
-      const eased = 1 - Math.pow(1 - p, 3);
+      const p = Math.min(1, (Date.now() - start) / duration);
+      const eased = 1 - Math.pow(1 - p, 4);
       setVal(Math.round(eased * target));
       if (p < 1) requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
-  }, [visible, target]);
-  return <div ref={ref} className="lp-stat-num">{val.toLocaleString()}<span>{suffix}</span></div>;
+  }, [active, target, duration]);
+  return val;
 }
 
+/* ─────────────────────────────────────────────────────────────────
+   SUB-COMPONENTS
+───────────────────────────────────────────────────────────────── */
+function MagBtn({ children, onClick, cls }: { children: React.ReactNode; onClick?: () => void; cls: string }) {
+  const ref = useRef<HTMLButtonElement>(null);
+  const onMove = (e: React.MouseEvent) => {
+    const r = ref.current!.getBoundingClientRect();
+    const x = ((e.clientX - r.left) / r.width) * 100;
+    const y = ((e.clientY - r.top) / r.height) * 100;
+    ref.current!.style.setProperty("--bx", `${x}%`);
+    ref.current!.style.setProperty("--by", `${y}%`);
+  };
+  return (
+    <button ref={ref} className={`lp-magbtn ${cls}`} onClick={onClick} onMouseMove={onMove}>
+      {children}
+    </button>
+  );
+}
+
+function BentoCard({ children, cls, delay = 0 }: { children: React.ReactNode; cls: string; delay?: number }) {
+  const { ref, visible } = useInView(0.1);
+  const onMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    e.currentTarget.style.setProperty("--cx", `${((e.clientX - r.left) / r.width) * 100}%`);
+    e.currentTarget.style.setProperty("--cy", `${((e.clientY - r.top) / r.height) * 100}%`);
+  };
+  return (
+    <div
+      ref={ref}
+      className={`lp-bento-card ${cls}${visible ? " visible" : ""}`}
+      style={{ transitionDelay: `${delay}s` }}
+      onMouseMove={onMove}
+    >
+      {children}
+    </div>
+  );
+}
+
+function StatNum({ target, suffix, label }: { target: number; suffix: string; label: string }) {
+  const { ref, visible } = useInView(0.3);
+  const val = useSpringCounter(target, visible);
+  return (
+    <div ref={ref} style={{ position: "relative", zIndex: 1 }}>
+      <div className="lp-stat-num">{val.toLocaleString()}<em>{suffix}</em></div>
+      <div className="lp-stat-l">{label}</div>
+    </div>
+  );
+}
+
+/* Interactive Dashboard */
+function LiveDashboard() {
+  const [view, setView] = useState<DashView>("dashboard");
+  const [prev, setPrev] = useState<DashView | null>(null);
+  const [aiText, setAiText] = useState("");
+  const [aiDone, setAiDone] = useState(false);
+  const [statVals, setStatVals] = useState({ clients: 24, revenue: 4120, checkins: 18 });
+  const timerRef = useRef<ReturnType<typeof setInterval>>();
+
+  const switchView = useCallback((v: DashView) => {
+    setPrev(view);
+    setView(v);
+    if (v === "ai") { setAiText(""); setAiDone(false); }
+  }, [view]);
+
+  // Auto-cycle views
+  useEffect(() => {
+    const order: DashView[] = ["dashboard", "clients", "ai", "analytics"];
+    let i = 0;
+    timerRef.current = setInterval(() => {
+      i = (i + 1) % order.length;
+      switchView(order[i]);
+    }, 4000);
+    return () => clearInterval(timerRef.current);
+  }, [switchView]);
+
+  // Typewriter for AI view
+  useEffect(() => {
+    if (view !== "ai") return;
+    let idx = 0;
+    const t = setInterval(() => {
+      setAiText(AI_TEXT.slice(0, idx));
+      idx++;
+      if (idx > AI_TEXT.length) { setAiDone(true); clearInterval(t); }
+    }, 28);
+    return () => clearInterval(t);
+  }, [view]);
+
+  // Subtle stat flicker on dashboard
+  useEffect(() => {
+    if (view !== "dashboard") return;
+    const t = setTimeout(() => {
+      setStatVals(v => ({ ...v, checkins: v.checkins === 18 ? 19 : 18 }));
+    }, 2000);
+    return () => clearTimeout(t);
+  }, [view, statVals]);
+
+  const cls = (id: DashView) => view === id ? "show" : prev === id ? "out" : "in-from-right";
+
+  return (
+    <div className="lp-dash">
+      <div className="lp-dash-bar">
+        <div className="lp-dash-dot" /><div className="lp-dash-dot" /><div className="lp-dash-dot" />
+        <div className="lp-dash-addr">app.coachos.io/dashboard</div>
+      </div>
+      <div className="lp-dash-body">
+        <div className="lp-dash-sidebar">
+          <div className="lp-dash-brand">CoachOS</div>
+          {DASH_NAVS.map(n => (
+            <button key={n.id} className={`lp-dash-nav${view === n.id ? " active" : ""}`}
+              onClick={() => { clearInterval(timerRef.current); switchView(n.id); }}>
+              <div className="lp-dash-nav-dot" />{n.label}
+            </button>
+          ))}
+        </div>
+        <div className="lp-dash-content">
+          {/* Dashboard */}
+          <div className={`lp-dv ${cls("dashboard")}`}>
+            <div className="lp-dv-title">☀ Morning Dashboard</div>
+            <div className="lp-dv-stats">
+              {[
+                { l: "Active Clients", v: statVals.clients, t: "↑ 3 this week" },
+                { l: "Revenue",        v: `£${statVals.revenue.toLocaleString()}`, t: "↑ 8% MoM" },
+                { l: "Check-ins",      v: statVals.checkins, t: "Today" },
+              ].map(s => (
+                <div key={s.l} className="lp-dv-stat">
+                  <div className="lp-dv-stat-l">{s.l}</div>
+                  <div className="lp-dv-stat-v">{s.v}</div>
+                  <div className="lp-dv-stat-t">{s.t}</div>
+                </div>
+              ))}
+            </div>
+            <div className="lp-dv-list">
+              {CLIENTS.slice(0, 3).map((c, i) => (
+                <div key={c.name} className="lp-dv-row" style={{ animationDelay: `${i * 0.08}s` }}>
+                  <div className="lp-dv-av" style={{ background: c.color }}>{c.name.split(" ").map(p => p[0]).join("")}</div>
+                  <div className="lp-dv-name">{c.name}</div>
+                  <div className={`lp-dv-pill ${c.status}`}>
+                    {c.status === "g" ? "On track" : c.status === "a" ? "Due soon" : c.status === "r" ? "At risk" : "Trial"}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Clients */}
+          <div className={`lp-dv ${cls("clients")}`}>
+            <div className="lp-cv-search">
+              <span className="lp-cv-search-icon">🔍</span>
+              <span className="lp-cv-search-text">Search 24 clients…</span>
+            </div>
+            {CLIENTS.map((c, i) => (
+              <div key={c.name} className="lp-cv-card" style={{ animationDelay: `${i * 0.07}s`, marginBottom: ".3rem" }}>
+                <div className="lp-dv-av" style={{ background: c.color, width: 26, height: 26, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: ".52rem", fontWeight: 800, color: "#fff", flexShrink: 0 }}>{c.name.split(" ").map(p => p[0]).join("")}</div>
+                <div className="lp-cv-info">
+                  <div className="lp-cv-name">{c.name}</div>
+                  <div className="lp-cv-sub">{c.goal}</div>
+                  <div className="lp-cv-bar-track"><div className="lp-cv-bar-fill" style={{ width: `${c.adh}%` }} /></div>
+                </div>
+                <div className={`lp-dv-pill ${c.status}`}>{c.adh}%</div>
+              </div>
+            ))}
+          </div>
+
+          {/* AI Plans */}
+          <div className={`lp-dv ${cls("ai")}`}>
+            <div className="lp-ai-header">
+              <div className="lp-ai-label">AI Plan Generator</div>
+              <div className="lp-ai-status"><div className="lp-ai-dot" />{aiDone ? "Done" : "Generating…"}</div>
+            </div>
+            <div className="lp-ai-stream">
+              <span style={{ whiteSpace: "pre-wrap" }}>{aiText}</span>
+              {!aiDone && <span className="lp-ai-cursor" />}
+              {aiDone && (
+                <div style={{ marginTop: ".5rem" }}>
+                  {["Periodised","Progressive Overload","High Protein"].map(t => (
+                    <span key={t} className="lp-ai-tag">{t}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Analytics */}
+          <div className={`lp-dv ${cls("analytics")}`}>
+            <div className="lp-dv-title">📈 Weekly Check-in Adherence</div>
+            <div className="lp-an-bars">
+              {ANALYTICS_BARS.map((b, i) => (
+                <div key={b.label} className="lp-an-bar-wrap">
+                  <div className="lp-an-bar" style={{ height: `${b.h}%`, animationDelay: `${i * 0.07}s` }} />
+                  <div className="lp-an-label">{b.label}</div>
+                </div>
+              ))}
+            </div>
+            <div className="lp-dv-stats" style={{ marginTop: ".5rem" }}>
+              {[{ l: "Avg Adherence", v: "74%", t: "↑ 6% vs last wk" }, { l: "At Risk", v: "3", t: "Needs nudge" }, { l: "Perfect Week", v: "9", t: "Clients" }].map(s => (
+                <div key={s.l} className="lp-dv-stat">
+                  <div className="lp-dv-stat-l">{s.l}</div>
+                  <div className="lp-dv-stat-v">{s.v}</div>
+                  <div className="lp-dv-stat-t">{s.t}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* Step Card — extracts hook from map */
+function StepCard({ n, t, d, delay }: { n: string; t: string; d: string; delay: number }) {
+  const { ref, visible } = useInView(0.15);
+  return (
+    <div ref={ref} style={{
+      background: "#fff", borderRadius: "20px", padding: "2rem",
+      border: "1px solid #eaeaea",
+      transform: visible ? "translateY(0)" : "translateY(30px)",
+      opacity: visible ? 1 : 0,
+      transition: `transform .6s ${delay}s cubic-bezier(0.16,1,0.3,1), opacity .6s ${delay}s`,
+    }}>
+      <div style={{ fontFamily: "'Manrope',sans-serif", fontWeight: 900, fontSize: "2.5rem", color: "#f0f0f0", lineHeight: 1, marginBottom: "1.25rem" }}>{n}</div>
+      <div style={{ fontFamily: "'Manrope',sans-serif", fontWeight: 800, fontSize: "1.05rem", color: "#0d0d1a", marginBottom: ".5rem" }}>{t}</div>
+      <div style={{ fontSize: ".875rem", color: "#6d7a73", lineHeight: 1.7 }}>{d}</div>
+    </div>
+  );
+}
+
+/* Price Card — extracts hook from map */
+function PriceCard({ tier, desc, price, features, cta, variant, featured, delay, onGetStarted }: {
+  tier: string; desc: string; price: string; features: string[];
+  cta: string; variant: "outline" | "solid"; featured: boolean; delay: number;
+  onGetStarted: () => void;
+}) {
+  const { ref, visible } = useInView(0.1);
+  return (
+    <div ref={ref}
+      className={`lp-price-card${featured ? " featured" : ""}${visible ? " visible" : ""}`}
+      style={{ transitionDelay: `${delay}s` }}>
+      {featured && <div className="lp-price-animated-border" />}
+      <div className={featured ? "lp-price-card-inner" : ""} style={featured ? {} : { display: "flex", flexDirection: "column", height: "100%" }}>
+        {featured && <div className="lp-price-badge">Most Popular</div>}
+        <div className="lp-price-tier">{tier}</div>
+        <div className="lp-price-desc">{desc}</div>
+        <div className="lp-price-num">
+          <div className="lp-price-cur">£</div>
+          <div className="lp-price-val">{price}</div>
+          <div className="lp-price-period">/mo</div>
+        </div>
+        <ul className="lp-price-features">
+          {features.map(f => (
+            <li key={f} className="lp-price-feat">
+              <div className="lp-price-check">✓</div>{f}
+            </li>
+          ))}
+        </ul>
+        <button className={`lp-price-cta ${variant}`} onClick={onGetStarted}>{cta}</button>
+      </div>
+    </div>
+  );
+}
+
+/* Testimonials Carousel */
+function Testimonials({ onGetStarted }: { onGetStarted: () => void }) {
+  const [idx, setIdx] = useState(0);
+  const { ref: wrapRef, visible } = useInView(0.1);
+
+  useEffect(() => {
+    const t = setInterval(() => setIdx(i => (i + 1) % TESTIMONIALS.length), 5000);
+    return () => clearInterval(t);
+  }, []);
+
+  const perPage = typeof window !== "undefined" && window.innerWidth < 900 ? 1 : 3;
+  const offset = Math.min(idx, TESTIMONIALS.length - perPage);
+
+  return (
+    <div ref={wrapRef}>
+      <div className="lp-testi-wrap">
+        <div className="lp-testi-track" style={{ transform: `translateX(calc(-${offset * (100 / 3 + .42)}%))` }}>
+          {TESTIMONIALS.map((t, i) => (
+            <div key={t.name} className={`lp-testi-card${visible ? " visible" : ""}`}
+              style={{ transitionDelay: `${i * 0.1}s` }}>
+              <div className="lp-testi-stars">★★★★★</div>
+              <p className="lp-testi-q">"{t.q}"</p>
+              <div className="lp-testi-author">
+                <div className="lp-testi-av" style={{ background: t.c }}>{t.av}</div>
+                <div>
+                  <div className="lp-testi-name">{t.name}</div>
+                  <div className="lp-testi-role">{t.role}</div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="lp-testi-controls">
+        {TESTIMONIALS.map((_, i) => (
+          <button key={i} className={`lp-testi-dot${i === idx ? " active" : ""}`} onClick={() => setIdx(i)} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   MAIN COMPONENT
+───────────────────────────────────────────────────────────────── */
 export function LandingPage({ onSignIn, onGetStarted }: Props) {
   const [scrolled, setScrolled] = useState(false);
+  const [heroIn, setHeroIn] = useState(false);
+  const [wordIn, setWordIn] = useState(false);
+  const heroRef = useRef<HTMLElement>(null);
+  const dashRef = useRef<HTMLDivElement>(null);
 
+  // Inject styles
   useEffect(() => {
-    const style = document.createElement("style");
-    style.id = "lp-styles";
-    if (!document.getElementById("lp-styles")) document.head.appendChild(style);
-    style.textContent = CSS;
-    return () => { style.remove(); };
+    let el = document.getElementById("lp-css") as HTMLStyleElement | null;
+    if (!el) { el = document.createElement("style"); el.id = "lp-css"; document.head.appendChild(el); }
+    el.textContent = CSS;
+    return () => { el?.remove(); };
   }, []);
 
+  // Scroll handler
   useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 20);
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
+    const fn = () => setScrolled(window.scrollY > 30);
+    window.addEventListener("scroll", fn, { passive: true });
+    return () => window.removeEventListener("scroll", fn);
   }, []);
 
-  const feat1 = useReveal(); const feat2 = useReveal(); const feat3 = useReveal();
-  const feat4 = useReveal(); const feat5 = useReveal(); const feat6 = useReveal();
-  const featRefs = [feat1, feat2, feat3, feat4, feat5, feat6];
+  // Hero entrance
+  useEffect(() => {
+    const t1 = setTimeout(() => setHeroIn(true), 120);
+    const t2 = setTimeout(() => setWordIn(true), 300);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+  }, []);
 
-  const step1 = useReveal(); const step2 = useReveal(); const step3 = useReveal();
-  const stepRefs = [step1, step2, step3];
+  // Mouse-reactive hero mesh
+  useEffect(() => {
+    const hero = heroRef.current; if (!hero) return;
+    const fn = (e: MouseEvent) => {
+      const r = hero.getBoundingClientRect();
+      const x = ((e.clientX - r.left) / r.width) * 100;
+      const y = ((e.clientY - r.top) / r.height) * 100;
+      hero.querySelector<HTMLElement>(".lp-hero-mesh")?.style.setProperty("--mx", `${x}%`);
+      hero.querySelector<HTMLElement>(".lp-hero-mesh")?.style.setProperty("--my", `${y}%`);
+    };
+    hero.addEventListener("mousemove", fn);
+    return () => hero.removeEventListener("mousemove", fn);
+  }, []);
 
-  const t1 = useReveal(); const t2 = useReveal(); const t3 = useReveal();
-  const tRefs = [t1, t2, t3];
+  // Dashboard 3D tilt on hero mouse move
+  useEffect(() => {
+    const hero = heroRef.current; if (!hero) return;
+    const fn = (e: MouseEvent) => {
+      const dash = dashRef.current; if (!dash) return;
+      const r = hero.getBoundingClientRect();
+      const nx = (e.clientX - r.left) / r.width - 0.5;
+      const ny = (e.clientY - r.top)  / r.height - 0.5;
+      dash.style.setProperty("--ry", `${-6 + nx * 8}deg`);
+      dash.style.setProperty("--rx", `${3 - ny * 6}deg`);
+    };
+    hero.addEventListener("mousemove", fn);
+    return () => hero.removeEventListener("mousemove", fn);
+  }, []);
 
-  const p1 = useReveal(); const p2 = useReveal(); const p3 = useReveal();
-  const pRefs = [p1, p2, p3];
+  const words = ["The operating", "system for", "serious", "fitness coaches."];
 
   return (
     <div className="lp">
       {/* NAV */}
-      <nav className={`lp-nav${scrolled ? " scrolled" : ""}`}>
-        <a className="lp-nav-logo" href="#">
-          <div className="lp-nav-logo-mark">C</div>
-          CoachOS
+      <nav className={`lp-nav${scrolled ? " solid" : ""}`}>
+        <a className="lp-logo" href="#">
+          <div className="lp-logo-mark">C</div>
+          <span className="lp-logo-text">CoachOS</span>
         </a>
         <div className="lp-nav-links">
           <a href="#features">Features</a>
           <a href="#how">How it works</a>
           <a href="#pricing">Pricing</a>
         </div>
-        <div className="lp-nav-actions">
-          <button className="lp-btn-ghost" onClick={onSignIn}>Sign In</button>
-          <button className="lp-btn-primary" onClick={onGetStarted}>Get Started →</button>
+        <div className="lp-nav-ctas">
+          <button className="lp-nav-ghost" onClick={onSignIn}>Sign In</button>
+          <button className="lp-nav-cta" onClick={onGetStarted}>Get Started →</button>
         </div>
       </nav>
 
-      {/* HERO */}
-      <section className="lp-hero">
-        <div className="lp-hero-blob" />
-        <div className="lp-hero-blob" />
-        <div className="lp-hero-blob" />
+      {/* ── HERO ── */}
+      <section className="lp-hero" ref={heroRef}>
+        <div className="lp-hero-mesh" />
+        <div className="lp-hero-grid-lines" />
 
-        <div className="lp-hero-badge">
-          <div className="lp-hero-badge-dot" />
-          Now with AI Plan Generation
-        </div>
-
-        <h1 className="lp-hero-h1">
-          The operating system for<br />
-          <span className="grad">serious fitness coaches</span>
-        </h1>
-
-        <p className="lp-hero-sub">
-          Manage clients, generate AI-powered programmes, track progress, and grow your revenue — all from one beautifully simple platform.
-        </p>
-
-        <div className="lp-hero-actions">
-          <button className="lp-hero-cta primary" onClick={onGetStarted}>
-            Start free — no card needed
-          </button>
-          <button className="lp-hero-cta secondary" onClick={onSignIn}>
-            Sign in to your account
-          </button>
-        </div>
-
-        <div className="lp-hero-trust">
-          <div className="lp-hero-trust-avatars">
-            {["JK","MT","SR","PN"].map(i => (
-              <div key={i} className="lp-hero-trust-avatar">{i}</div>
-            ))}
+        <div className="lp-hero-left">
+          <div className={`lp-hero-badge${heroIn ? " in" : ""}`}>
+            <div className="lp-badge-pulse" />
+            Now with AI Plan Generation
           </div>
-          <p className="lp-hero-trust-text">Trusted by 2,000+ coaches worldwide</p>
+
+          <h1 className="lp-hero-h1">
+            {words.map((line, li) => (
+              <span key={li} style={{ display: "block" }}>
+                {line.split(" ").map((w, wi) => {
+                  const isGreen = w === "serious" || w === "fitness" || w === "coaches.";
+                  const delay = (li * 2 + wi) * 0.09;
+                  return (
+                    <span key={wi} className={`lp-word${isGreen ? " lp-word-green" : ""}`}>
+                      <span className={`lp-word-inner${wordIn ? " in" : ""}`}
+                        style={{ transitionDelay: `${delay}s` }}>
+                        {w}
+                      </span>
+                    </span>
+                  );
+                })}
+              </span>
+            ))}
+          </h1>
+
+          <p className={`lp-hero-sub${heroIn ? " in" : ""}`}>
+            Manage clients, generate AI-powered programmes, and grow your revenue — all from one platform that actually understands how coaching works.
+          </p>
+
+          <div className={`lp-hero-actions${heroIn ? " in" : ""}`}>
+            <MagBtn cls="lp-magbtn-primary" onClick={onGetStarted}>
+              Start free — no card needed
+            </MagBtn>
+            <MagBtn cls="lp-magbtn-ghost" onClick={onSignIn}>
+              Sign in →
+            </MagBtn>
+          </div>
+
+          <div className={`lp-hero-trust${heroIn ? " in" : ""}`}>
+            <div className="lp-trust-avatars">
+              {[
+                ["JK","#008767"],["MT","#6366f1"],["SR","#ec4899"],["DN","#f97316"],
+              ].map(([i, c]) => (
+                <div key={i} className="lp-trust-av" style={{ background: c }}>{i}</div>
+              ))}
+            </div>
+            <div>
+              <div className="lp-trust-stars">★★★★★</div>
+              <div className="lp-trust-text">Trusted by 2,000+ coaches worldwide</div>
+            </div>
+          </div>
         </div>
 
-        {/* Dashboard preview */}
-        <div className="lp-preview-wrap">
-          <div className="lp-preview">
-            <div className="lp-preview-bar">
-              <div className="lp-preview-dot" /><div className="lp-preview-dot" /><div className="lp-preview-dot" />
-              <div className="lp-preview-url">app.coachos.io/dashboard</div>
-            </div>
-            <div className="lp-preview-screen">
-              <div className="lp-preview-sidebar">
-                <div className="lp-preview-sidebar-logo">CoachOS</div>
-                {[["Dashboard","active"],["Clients",""],["Plans",""],["Portal",""],["Billing",""]].map(([label, cls]) => (
-                  <div key={label} className={`lp-preview-nav-item${cls ? " "+cls : ""}`}>
-                    <div className="lp-preview-nav-dot" />{label}
+        {/* Interactive dashboard */}
+        <div className={`lp-hero-right${heroIn ? " in" : ""}`} ref={dashRef}>
+          <LiveDashboard />
+        </div>
+      </section>
+
+      {/* MARQUEE */}
+      <div className="lp-marquee-wrap">
+        <div className="lp-marquee-track">
+          {[...MARQUEE_ITEMS, ...MARQUEE_ITEMS].map((item, i) => (
+            <span key={i} className="lp-marquee-item">
+              {item}
+              <span className="lp-marquee-sep">◆</span>
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* ── FEATURES BENTO ── */}
+      <section className="lp-section" id="features">
+        <div className="lp-tag"><div className="lp-tag-line" />Features</div>
+        <h2 className="lp-h2">Everything a serious coaching business needs</h2>
+        <p className="lp-sub">Built from the ground up for online coaches. Every feature solves a real problem.</p>
+        <div className="lp-bento">
+          <BentoCard cls="lp-b1" delay={0}>
+            <div className="lp-bento-icon" style={{ background: "#d1fae5" }}>👥</div>
+            <div className="lp-bento-h">Client Management that scales</div>
+            <p className="lp-bento-p">Every client's goals, nutrition targets, training history, and billing status in one clean view. Handle 5 or 50 without losing your mind.</p>
+            <div className="lp-bento-mini-preview">
+              <div className="lp-mini-stat-row">
+                {[{ l: "Active", v: "24" }, { l: "At Risk", v: "3" }, { l: "Revenue", v: "£4.1k" }].map(s => (
+                  <div key={s.l} className="lp-mini-stat">
+                    <div className="lp-mini-stat-l">{s.l}</div>
+                    <div className="lp-mini-stat-v">{s.v}</div>
                   </div>
                 ))}
               </div>
-              <div className="lp-preview-content">
-                <div className="lp-preview-header">
-                  <div className="lp-preview-title">Morning Dashboard</div>
-                  <div className="lp-preview-btn">+ Add Client</div>
-                </div>
-                <div className="lp-preview-stats">
-                  {[["Active Clients","24","↑ 3 this week"],["Revenue","£4,120","↑ £340"],["Check-ins","18","Today"],["At Risk","2","Needs attention"]].map(([label, val, trend]) => (
-                    <div key={label} className="lp-preview-stat">
-                      <div className="lp-preview-stat-label">{label}</div>
-                      <div className="lp-preview-stat-value">{val}</div>
-                      <div className="lp-preview-stat-trend">{trend}</div>
-                    </div>
-                  ))}
-                </div>
-                <div className="lp-preview-clients">
-                  {[
-                    ["JK","Jessica K.", "Active", "green", "#008767"],
-                    ["MT","Marcus T.", "Check-in due", "amber", "#f59e0b"],
-                    ["SR","Sarah R.", "At Risk", "red", "#ba1a1a"],
-                  ].map(([init, name, status, pill, bg]) => (
-                    <div key={name} className="lp-preview-client-row">
-                      <div className="lp-preview-avatar" style={{ background: bg }}>{init}</div>
-                      <div className="lp-preview-client-name">{name}</div>
-                      <div className={`lp-preview-pill ${pill}`}>{status}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              <div className="lp-mini-bar"><div className="lp-mini-bar-fill" style={{ width: "78%" }} /></div>
             </div>
-          </div>
+          </BentoCard>
+
+          <BentoCard cls="lp-b2" delay={0.07}>
+            <div className="lp-bento-icon" style={{ background: "#dbeafe" }}>🤖</div>
+            <div className="lp-bento-h">AI that understands periodisation</div>
+            <p className="lp-bento-p">Generate complete, scientifically-structured training and nutrition plans in seconds. Not templates. Real plans.</p>
+          </BentoCard>
+
+          <BentoCard cls="lp-b3" delay={0.1}>
+            <div className="lp-bento-icon" style={{ background: "#fce7f3" }}>📊</div>
+            <div className="lp-bento-h">Progress at a glance</div>
+            <p className="lp-bento-p">Body metrics, adherence scores, and week-over-week deltas tell you exactly who's winning and who needs a nudge.</p>
+          </BentoCard>
+
+          <BentoCard cls="lp-b4" delay={0.14}>
+            <div className="lp-bento-icon" style={{ background: "#fef3c7" }}>💬</div>
+            <div className="lp-bento-h">Structured check-ins</div>
+            <p className="lp-bento-p">Consistent weekly check-in forms so you're never chasing clients across WhatsApp, email, and DMs again.</p>
+          </BentoCard>
+
+          <BentoCard cls="lp-b5" delay={0.18}>
+            <div className="lp-bento-icon" style={{ background: "#ede9fe" }}>💰</div>
+            <div className="lp-bento-h">Revenue tracking</div>
+            <p className="lp-bento-p">Renewal alerts, overdue flags, and a morning snapshot of your monthly revenue so nothing slips through.</p>
+          </BentoCard>
         </div>
       </section>
 
-      {/* STATS */}
-      <div className="lp-stats">
-        {[
-          { target: 2000, suffix: "+", label: "Coaches using CoachOS" },
-          { target: 48000, suffix: "+", label: "Client check-ins processed" },
-          { target: 97, suffix: "%", label: "Coach retention rate" },
-          { target: 4, suffix: "hrs", label: "Saved per week on average" },
-        ].map(s => (
-          <div key={s.label}>
-            <AnimatedNumber target={s.target} suffix={s.suffix} />
-            <div className="lp-stat-label">{s.label}</div>
-          </div>
-        ))}
+      {/* ── DARK STATS ── */}
+      <div className="lp-stats-dark">
+        <StatNum target={2000}  suffix="+"  label="Coaches using CoachOS" />
+        <StatNum target={48000} suffix="+"  label="Client check-ins processed" />
+        <StatNum target={97}    suffix="%"  label="Coach retention rate" />
+        <StatNum target={4}     suffix="hrs" label="Saved per week on average" />
       </div>
 
-      {/* FEATURES */}
-      <section className="lp-section" id="features">
-        <div className="lp-section-tag">Features</div>
-        <h2 className="lp-section-h2">Everything you need to run a world-class coaching business</h2>
-        <p className="lp-section-sub">Built by coaches, for coaches. Every feature solves a real problem you face every day.</p>
-        <div className="lp-features-grid">
-          {features.map((f, i) => (
-            <div
-              key={f.title}
-              ref={featRefs[i].ref}
-              className={`lp-feature-card${featRefs[i].visible ? " visible" : ""}`}
-              style={{ animationDelay: `${(i % 3) * 0.1}s` }}
-            >
-              <div className="lp-feature-icon" style={{ background: f.color }}>{f.icon}</div>
-              <div className="lp-feature-h3">{f.title}</div>
-              <p className="lp-feature-p">{f.desc}</p>
-            </div>
-          ))}
+      {/* ── HOW IT WORKS ── */}
+      <section className="lp-section" id="how">
+        <div className="lp-tag"><div className="lp-tag-line" />How It Works</div>
+        <h2 className="lp-h2">Running in minutes, not months</h2>
+        <p className="lp-sub">No onboarding call. No enterprise contract. No 47-step setup wizard.</p>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: "1.5rem" }}>
+          <StepCard n="01" t="Set up your workspace" d="Add your brand, coaching niche, and pricing. Done in under 5 minutes." delay={0} />
+          <StepCard n="02" t="Import your clients"   d="Upload from CSV or add manually. Set goals, targets, and billing in one flow." delay={0.12} />
+          <StepCard n="03" t="Deliver at scale"      d="AI plans, check-ins, and a morning dashboard keep you on top of everything." delay={0.24} />
         </div>
       </section>
 
-      {/* HOW IT WORKS */}
-      <div className="lp-how" id="how">
-        <div className="lp-how-inner">
-          <div className="lp-section-tag">How It Works</div>
-          <h2 className="lp-section-h2">Up and running in minutes, not weeks</h2>
-          <p className="lp-section-sub">No onboarding calls, no IT team, no 47-step setup wizard.</p>
-          <div className="lp-steps">
-            {steps.map((s, i) => (
-              <div
-                key={s.n}
-                ref={stepRefs[i].ref}
-                className={`lp-step${stepRefs[i].visible ? " visible" : ""}`}
-                style={{ animationDelay: `${i * 0.15}s` }}
-              >
-                <div className="lp-step-num">{s.n}</div>
-                <div className="lp-step-h3">{s.title}</div>
-                <p className="lp-step-p">{s.desc}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* TESTIMONIALS */}
-      <section className="lp-section">
-        <div className="lp-section-tag">Testimonials</div>
-        <h2 className="lp-section-h2">Coaches love CoachOS</h2>
-        <p className="lp-section-sub">Real coaches. Real results. No stock photos.</p>
-        <div className="lp-testimonials-grid">
-          {testimonials.map((t, i) => (
-            <div
-              key={t.name}
-              ref={tRefs[i].ref}
-              className={`lp-testimonial${tRefs[i].visible ? " visible" : ""}`}
-              style={{ animationDelay: `${i * 0.12}s` }}
-            >
-              <div className="lp-testimonial-stars">★★★★★</div>
-              <p className="lp-testimonial-quote">"{t.quote}"</p>
-              <div className="lp-testimonial-author">
-                <div className="lp-testimonial-avatar" style={{ background: t.color }}>{t.initials}</div>
-                <div>
-                  <div className="lp-testimonial-name">{t.name}</div>
-                  <div className="lp-testimonial-role">{t.role}</div>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
+      {/* ── TESTIMONIALS ── */}
+      <section style={{ padding: "clamp(4rem,8vw,7rem) clamp(1.5rem,5vw,5rem)", maxWidth: "1200px", margin: "0 auto" }}>
+        <div className="lp-tag"><div className="lp-tag-line" />Social Proof</div>
+        <h2 className="lp-h2">Coaches who made the switch</h2>
+        <p className="lp-sub" style={{ marginBottom: "2.5rem" }}>Real results. No stock photos. No made-up numbers.</p>
+        <Testimonials onGetStarted={onGetStarted} />
       </section>
 
-      {/* PRICING */}
+      {/* ── PRICING ── */}
       <section className="lp-section" id="pricing">
-        <div className="lp-section-tag">Pricing</div>
-        <h2 className="lp-section-h2">Simple pricing, no surprises</h2>
-        <p className="lp-section-sub">All plans include a 14-day free trial. No credit card required to start.</p>
+        <div className="lp-tag"><div className="lp-tag-line" />Pricing</div>
+        <h2 className="lp-h2">Simple. Honest. No surprises.</h2>
+        <p className="lp-sub">14-day free trial on all plans. No credit card required.</p>
         <div className="lp-pricing-grid">
-          {plans.map((plan, i) => (
-            <div
-              key={plan.tier}
-              ref={pRefs[i].ref}
-              className={`lp-pricing-card${plan.featured ? " featured" : ""}${pRefs[i].visible ? " visible" : ""}`}
-              style={{ animationDelay: `${i * 0.12}s` }}
-            >
-              {plan.featured && <div className="lp-pricing-badge">Most Popular</div>}
-              <div className="lp-pricing-tier">{plan.tier}</div>
-              <div className="lp-pricing-desc">{plan.desc}</div>
-              <div className="lp-pricing-price">
-                <div className="lp-pricing-currency">£</div>
-                <div className="lp-pricing-amount">{plan.price}</div>
-                <div className="lp-pricing-period">/mo</div>
-              </div>
-              <ul className="lp-pricing-features">
-                {plan.features.map(f => (
-                  <li key={f} className="lp-pricing-feature">
-                    <div className="lp-pricing-feature-check">✓</div>
-                    {f}
-                  </li>
-                ))}
-              </ul>
-              <button
-                className={`lp-pricing-cta ${plan.variant}`}
-                onClick={onGetStarted}
-              >
-                {plan.cta}
-              </button>
-            </div>
-          ))}
+          <PriceCard tier="Starter" desc="For coaches getting started" price="29"
+            features={["Up to 10 clients","AI plan generation","Check-in forms","Basic analytics","Email support"]}
+            cta="Start free trial" variant="outline" featured={false} delay={0} onGetStarted={onGetStarted} />
+          <PriceCard tier="Pro" desc="For coaches scaling fast" price="79"
+            features={["Unlimited clients","Priority AI generation","Group programmes","Revenue tracking","Habit coaching","Priority support"]}
+            cta="Start free trial" variant="solid" featured={true} delay={0.1} onGetStarted={onGetStarted} />
+          <PriceCard tier="Agency" desc="For multi-coach businesses" price="199"
+            features={["Multiple coach seats","White-label branding","Custom integrations","Advanced analytics","Dedicated manager"]}
+            cta="Talk to sales" variant="outline" featured={false} delay={0.2} onGetStarted={onGetStarted} />
         </div>
       </section>
 
-      {/* FINAL CTA */}
-      <div className="lp-cta-section">
-        <div className="lp-cta-glow" />
-        <div className="lp-cta-glow" />
-        <h2 className="lp-cta-h2">Ready to scale your coaching business?</h2>
-        <p className="lp-cta-sub">Join 2,000+ coaches who've replaced spreadsheets and DMs with CoachOS.</p>
-        <div className="lp-cta-actions">
-          <button className="lp-cta-btn white" onClick={onGetStarted}>Start your free trial</button>
-          <button className="lp-cta-btn bordered" onClick={onSignIn}>Sign in →</button>
+      {/* ── FINAL CTA ── */}
+      <div className="lp-final-cta">
+        <div className="lp-final-glow" />
+        <div className="lp-final-glow" />
+        <h2 className="lp-final-h">Stop managing chaos.<br />Start running a business.</h2>
+        <p className="lp-final-sub">Join 2,000+ coaches who replaced spreadsheets and DMs with CoachOS.</p>
+        <div className="lp-final-actions">
+          <button className="lp-final-btn white" onClick={onGetStarted}>Start your free trial</button>
+          <button className="lp-final-btn ghost2" onClick={onSignIn}>Sign in to your account →</button>
         </div>
       </div>
 
-      {/* FOOTER */}
+      {/* ── FOOTER ── */}
       <footer className="lp-footer">
         <div className="lp-footer-inner">
           <div className="lp-footer-top">
             <div className="lp-footer-brand">
-              <div className="lp-footer-brand-name">
-                <div className="lp-nav-logo-mark">C</div>
-                CoachOS
+              <div className="lp-footer-brand-row">
+                <div className="lp-logo-mark">C</div>
+                <div className="lp-footer-brand-name">CoachOS</div>
               </div>
               <p className="lp-footer-brand-p">The all-in-one platform for online fitness coaches who want to deliver better results, to more clients, with less admin.</p>
             </div>
             <div className="lp-footer-cols">
-              <div>
-                <div className="lp-footer-col-h">Product</div>
-                <div className="lp-footer-col-links">
-                  <a href="#features">Features</a>
-                  <a href="#pricing">Pricing</a>
-                  <a href="#how">How it works</a>
+              {[
+                { h: "Product",  links: [["Features","#features"],["Pricing","#pricing"],["How it works","#how"]] },
+                { h: "Company",  links: [["About","#"],["Blog","#"],["Careers","#"]] },
+                { h: "Support",  links: [["Help Centre","#"],["Contact","#"],["Sign In","#"]] },
+              ].map(col => (
+                <div key={col.h}>
+                  <div className="lp-footer-col-h">{col.h}</div>
+                  <div className="lp-footer-col-links">
+                    {col.links.map(([label, href]) => (
+                      <a key={label} href={href}
+                        onClick={label === "Sign In" ? (e => { e.preventDefault(); onSignIn(); }) : undefined}>
+                        {label}
+                      </a>
+                    ))}
+                  </div>
                 </div>
-              </div>
-              <div>
-                <div className="lp-footer-col-h">Company</div>
-                <div className="lp-footer-col-links">
-                  <a href="#">About</a>
-                  <a href="#">Blog</a>
-                  <a href="#">Careers</a>
-                </div>
-              </div>
-              <div>
-                <div className="lp-footer-col-h">Support</div>
-                <div className="lp-footer-col-links">
-                  <a href="#">Help Centre</a>
-                  <a href="#">Contact</a>
-                  <a href="#" onClick={e => { e.preventDefault(); onSignIn(); }}>Sign In</a>
-                </div>
-              </div>
+              ))}
             </div>
           </div>
           <div className="lp-footer-bottom">
             <span className="lp-footer-copy">© 2026 CoachOS. All rights reserved.</span>
             <div className="lp-footer-legal">
-              <a href="#">Privacy</a>
-              <a href="#">Terms</a>
-              <a href="#">Cookies</a>
+              <a href="#">Privacy</a><a href="#">Terms</a><a href="#">Cookies</a>
             </div>
           </div>
         </div>
