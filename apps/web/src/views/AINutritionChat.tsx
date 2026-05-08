@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Bot, ChevronDown, ChevronUp, Send, Sparkles } from "lucide-react";
-import { fetchJson } from "../lib/api";
+import { apiBase, getStoredAuthToken } from "../lib/api";
 
 interface ClientProfile {
   fullName: string;
@@ -47,82 +47,29 @@ interface AINutritionChatProps {
   mealWeek?: WeekDay[];
 }
 
-function buildSystemPrompt(profile: ClientProfile, mealWeek?: WeekDay[]): string {
-  const lines: string[] = [
-    "You are a specialist AI nutrition coach assistant working inside CoachOS, a professional fitness coaching platform.",
-    "You are helping a coach manage the nutrition of one of their clients. Below is the full client profile:",
-    "",
-    `CLIENT NAME: ${profile.fullName}`,
-    `GOAL: ${profile.goal}`,
-    `GENDER: ${profile.clientGender ?? "not specified"}`,
-    `GOAL TIMELINE: ${profile.goalTimelineMonths ?? "not set"} months`,
-    `ADHERENCE SCORE: ${profile.adherenceScore ?? "N/A"}%`,
-    "",
-    "DAILY MACRO TARGETS:",
-    `  Calories: ${profile.nutritionCalories ?? "not set"} kcal`,
-    `  Protein:  ${profile.nutritionProteinG ?? "not set"} g`,
-    `  Carbs:    ${profile.nutritionCarbsG ?? "not set"} g`,
-    `  Fat:      ${profile.nutritionFatG ?? "not set"} g`,
-    "",
-    `DAILY WATER TARGET: ${profile.dailyWaterTarget ?? 3} L`,
-    `DAILY STEPS TARGET: ${profile.dailyStepsTarget ?? 10000}`,
-    "",
-  ];
+async function fetchNutritionChat(
+  messages: { role: "user" | "assistant"; content: string }[],
+  clientProfile: ClientProfile,
+  mealWeek?: WeekDay[]
+): Promise<{ reply?: string; error?: string }> {
+  const token = getStoredAuthToken();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
 
-  if (profile.healthConditions && profile.healthConditions.length > 0) {
-    lines.push("HEALTH CONDITIONS / RESTRICTIONS:");
-    profile.healthConditions.forEach(c => lines.push(`  - ${c.label}${c.note ? `: ${c.note}` : ""}`));
-    lines.push("");
+  const res = await fetch(`${apiBase}/ai/nutrition-chat`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ messages, clientProfile, mealWeek }),
+  });
+
+  const data = await res.json() as { reply?: string; error?: string; message?: string };
+
+  if (!res.ok) {
+    if (data.error === "OPENAI_KEY_MISSING") return { error: "OPENAI_KEY_MISSING" };
+    throw new Error(data.message ?? `Request failed (${res.status})`);
   }
 
-  if (profile.supplements && profile.supplements.length > 0) {
-    lines.push(`SUPPLEMENTS: ${profile.supplements.join(", ")}`);
-    lines.push("");
-  }
-
-  if (profile.nutritionCoachNote) {
-    lines.push(`COACH NUTRITION NOTE: ${profile.nutritionCoachNote}`);
-    lines.push("");
-  }
-
-  if (mealWeek && mealWeek.length > 0) {
-    lines.push("CURRENT MEAL PLAN SUMMARY (this week):");
-    mealWeek.forEach(day => {
-      const filled = day.meals.filter(m => m.name !== "-");
-      if (filled.length > 0) {
-        const totalCal = filled.reduce((s, m) => s + m.cal, 0);
-        const totalP = filled.reduce((s, m) => s + m.protein, 0);
-        lines.push(`  ${day.name}: ${filled.map(m => m.name).join(", ")} — ${totalCal} kcal, ${totalP}g protein`);
-      }
-    });
-    lines.push("");
-  }
-
-  lines.push(
-    "INSTRUCTIONS:",
-    "- Always personalise every response to this client's specific goals, macros, and health conditions.",
-    "- When asked for a recipe, return a RECIPE_CARD JSON block followed by a brief explanation.",
-    "  Format the recipe card exactly like this:",
-    '  ```recipe',
-    '  {',
-    '    "name": "...",',
-    '    "calories": 000,',
-    '    "protein": 00,',
-    '    "carbs": 00,',
-    '    "fat": 00,',
-    '    "servings": "1 serving",',
-    '    "timing": "e.g. Post-workout / 6:00 PM",',
-    '    "oilNote": "e.g. Use 1 tsp olive oil",',
-    '    "ingredients": ["200g chicken breast", "..."],',
-    '    "steps": ["Step 1", "Step 2", "..."]',
-    '  }',
-    '  ```',
-    "- For general nutrition questions, give concise, practical advice.",
-    "- Be encouraging and professional. Keep responses focused and actionable.",
-    "- Always respect the client's health conditions — never suggest anything contraindicated.",
-  );
-
-  return lines.join("\n");
+  return { reply: data.reply ?? "" };
 }
 
 function parseRecipeCard(content: string): { card: RecipeCard; before: string; after: string } | null {
@@ -148,10 +95,10 @@ function RecipeCardView({ card }: { card: RecipeCard }) {
       <div className="ai-chat-recipe-header">
         <div className="ai-chat-recipe-name">{card.name}</div>
         <div className="ai-chat-recipe-macros">
-          <span className="ai-chat-recipe-macro ai-chat-recipe-macro--cal">{card.calories} kcal</span>
-          <span className="ai-chat-recipe-macro ai-chat-recipe-macro--p">P {card.protein}g</span>
-          <span className="ai-chat-recipe-macro ai-chat-recipe-macro--c">C {card.carbs}g</span>
-          <span className="ai-chat-recipe-macro ai-chat-recipe-macro--f">F {card.fat}g</span>
+          <span className="ai-chat-recipe-macro">{card.calories} kcal</span>
+          <span className="ai-chat-recipe-macro">P {card.protein}g</span>
+          <span className="ai-chat-recipe-macro">C {card.carbs}g</span>
+          <span className="ai-chat-recipe-macro">F {card.fat}g</span>
         </div>
         <div className="ai-chat-recipe-meta">
           {card.servings && <span>{card.servings}</span>}
@@ -241,7 +188,6 @@ export function AINutritionChat({ clientProfile, mealWeek }: AINutritionChatProp
   const [contextOpen, setContextOpen] = useState(false);
   const [apiMissing, setApiMissing] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     setMessages([]);
@@ -262,26 +208,19 @@ export function AINutritionChat({ clientProfile, mealWeek }: AINutritionChatProp
     setInput("");
     setLoading(true);
 
+    const openaiMessages = updated.map(m => ({
+      role: m.role === "coach" ? "user" as const : "assistant" as const,
+      content: m.content,
+    }));
+
     try {
-      const openaiMessages = updated.map(m => ({
-        role: m.role === "coach" ? "user" : "assistant",
-        content: m.content,
-      }));
-
-      const data = await fetchJson<{ reply: string; error?: string }>("/ai/nutrition-chat", {
-        method: "POST",
-        body: JSON.stringify({
-          messages: openaiMessages,
-          systemPrompt: buildSystemPrompt(clientProfile, mealWeek),
-        }),
-      });
-
-      if (data.error === "OPENAI_KEY_MISSING") {
-        setApiMissing(true);
+      const result = await fetchNutritionChat(openaiMessages, clientProfile, mealWeek);
+      if (result.error === "OPENAI_KEY_MISSING") {
         setMessages(prev => prev.slice(0, -1));
         setInput(trimmed);
+        setApiMissing(true);
       } else {
-        setMessages(prev => [...prev, { role: "ai", content: data.reply }]);
+        setMessages(prev => [...prev, { role: "ai", content: result.reply ?? "" }]);
       }
     } catch {
       setMessages(prev => [...prev, {
@@ -422,7 +361,6 @@ export function AINutritionChat({ clientProfile, mealWeek }: AINutritionChatProp
 
       <div className="ai-chat-input-row">
         <textarea
-          ref={textareaRef}
           className="ai-chat-textarea"
           rows={1}
           placeholder="Ask about recipes, macros, meal timing…"

@@ -444,18 +444,103 @@ export function createApp(store: DemoStore) {
   });
 
   // ── AI Nutrition Chat ─────────────────────────────────────
+  function buildNutritionSystemPrompt(profile: Record<string, unknown>, mealWeek?: Array<{ name: string; meals: Array<{ slot: string; name: string; cal: number; protein: number }> }>): string {
+    const lines: string[] = [
+      "You are a specialist AI nutrition coach assistant working inside CoachOS, a professional fitness coaching platform.",
+      "You are helping a coach manage the nutrition of one of their clients. Below is the full client profile:",
+      "",
+      `CLIENT NAME: ${String(profile.fullName ?? "Unknown")}`,
+      `GOAL: ${String(profile.goal ?? "not set")}`,
+      `GENDER: ${String(profile.clientGender ?? "not specified")}`,
+      `GOAL TIMELINE: ${String(profile.goalTimelineMonths ?? "not set")} months`,
+      `ADHERENCE SCORE: ${String(profile.adherenceScore ?? "N/A")}%`,
+      "",
+      "DAILY MACRO TARGETS:",
+      `  Calories: ${String(profile.nutritionCalories ?? "not set")} kcal`,
+      `  Protein:  ${String(profile.nutritionProteinG ?? "not set")} g`,
+      `  Carbs:    ${String(profile.nutritionCarbsG ?? "not set")} g`,
+      `  Fat:      ${String(profile.nutritionFatG ?? "not set")} g`,
+      "",
+      `DAILY WATER TARGET: ${String(profile.dailyWaterTarget ?? 3)} L`,
+      `DAILY STEPS TARGET: ${String(profile.dailyStepsTarget ?? 10000)}`,
+      "",
+    ];
+
+    const conditions = profile.healthConditions as Array<{ label: string; note: string }> | undefined;
+    if (conditions && conditions.length > 0) {
+      lines.push("HEALTH CONDITIONS / RESTRICTIONS:");
+      conditions.forEach(c => lines.push(`  - ${c.label}${c.note ? `: ${c.note}` : ""}`));
+      lines.push("");
+    }
+
+    const supplements = profile.supplements as string[] | undefined;
+    if (supplements && supplements.length > 0) {
+      lines.push(`SUPPLEMENTS: ${supplements.join(", ")}`);
+      lines.push("");
+    }
+
+    if (profile.nutritionCoachNote) {
+      lines.push(`COACH NUTRITION NOTE: ${String(profile.nutritionCoachNote)}`);
+      lines.push("");
+    }
+
+    if (mealWeek && mealWeek.length > 0) {
+      lines.push("CURRENT MEAL PLAN SUMMARY (this week):");
+      mealWeek.forEach(day => {
+        const filled = day.meals.filter((m: { name: string }) => m.name !== "-");
+        if (filled.length > 0) {
+          const totalCal = filled.reduce((s, m) => s + (m.cal ?? 0), 0);
+          const totalP = filled.reduce((s, m) => s + (m.protein ?? 0), 0);
+          lines.push(`  ${day.name}: ${filled.map(m => m.name).join(", ")} — ${totalCal} kcal, ${totalP}g protein`);
+        }
+      });
+      lines.push("");
+    }
+
+    lines.push(
+      "INSTRUCTIONS:",
+      "- Always personalise every response to this client's specific goals, macros, and health conditions.",
+      "- When asked for a recipe, return a RECIPE_CARD JSON block followed by a brief explanation.",
+      "  Format the recipe card exactly like this:",
+      "  ```recipe",
+      "  {",
+      '    "name": "...",',
+      '    "calories": 000,',
+      '    "protein": 00,',
+      '    "carbs": 00,',
+      '    "fat": 00,',
+      '    "servings": "1 serving",',
+      '    "timing": "e.g. Post-workout / 6:00 PM",',
+      '    "oilNote": "e.g. Use 1 tsp olive oil",',
+      '    "ingredients": ["200g chicken breast", "..."],',
+      '    "steps": ["Step 1", "Step 2", "..."]',
+      "  }",
+      "  ```",
+      "- For general nutrition questions, give concise, practical advice.",
+      "- Be encouraging and professional. Keep responses focused and actionable.",
+      "- Always respect the client's health conditions — never suggest anything contraindicated.",
+    );
+
+    return lines.join("\n");
+  }
+
   app.post("/api/ai/nutrition-chat", async (req, res) => {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      res.status(503).json({ error: "OPENAI_KEY_MISSING", reply: "" });
+      res.status(503).json({ error: "OPENAI_KEY_MISSING" });
       return;
     }
 
-    const { messages, systemPrompt } = req.body ?? {};
-    if (!Array.isArray(messages) || typeof systemPrompt !== "string") {
-      res.status(400).json({ message: "messages (array) and systemPrompt (string) are required." });
+    const { messages, clientProfile, mealWeek } = req.body ?? {};
+    if (!Array.isArray(messages) || typeof clientProfile !== "object" || clientProfile === null) {
+      res.status(400).json({ message: "messages (array) and clientProfile (object) are required." });
       return;
     }
+
+    const systemPrompt = buildNutritionSystemPrompt(
+      clientProfile as Record<string, unknown>,
+      Array.isArray(mealWeek) ? mealWeek as Array<{ name: string; meals: Array<{ slot: string; name: string; cal: number; protein: number }> }> : undefined
+    );
 
     try {
       const openai = new OpenAI({ apiKey });
