@@ -13,12 +13,9 @@ export function getStoredAuthToken() {
 }
 
 export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const coachId = getStoredCoachId();
   const token = getStoredAuthToken();
-  const separator = path.includes("?") ? "&" : "?";
-  const scopedPath = coachId ? `${path}${separator}coachId=${encodeURIComponent(coachId)}` : path;
   const authHeaders: Record<string, string> = token ? { "Authorization": `Bearer ${token}` } : {};
-  const res = await fetch(`${apiBase}${scopedPath}`, {
+  const res = await fetch(`${apiBase}${path}`, {
     ...init,
     headers: { "Content-Type": "application/json", ...authHeaders, ...(init?.headers ?? {}) }
   });

@@ -6210,10 +6210,14 @@ function App() {
     let completedSession = session;
     let completedCoachId = session.coach.id;
     try {
-      const result = await fetchJson<{ coachId: string; workspaceId: string; session: CoachSession }>("/onboarding/coach", { method: "POST", body: JSON.stringify(payload) });
+      const result = await fetchJson<{ coachId: string; workspaceId: string; session: CoachSession; token?: string | null }>("/onboarding/coach", { method: "POST", body: JSON.stringify(payload) });
       completedSession = result.session;
       completedCoachId = result.coachId;
       setSession(result.session);
+      if (result.token) {
+        try { localStorage.setItem(authTokenStorageKey, result.token); } catch { /* ignore */ }
+        setAuthToken(result.token);
+      }
     } catch (error) {
       const fallbackSession = {
         ...session,

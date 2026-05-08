@@ -22,6 +22,8 @@ type Env = {
   COACHOS_STORAGE_MODE?: string;
   SUPABASE_URL?: string;
   SUPABASE_SERVICE_ROLE_KEY?: string;
+  COACHOS_JWT_SECRET?: string;
+  STRIPE_WEBHOOK_SECRET?: string;
 };
 
 type WorkerState = DemoState & {
@@ -95,6 +97,85 @@ async function supabase<T>(env: Env, table: string, query = "", init: RequestIni
 
 function postgrestIn(values: string[]) {
   return `in.(${values.map((value) => `"${value.replaceAll('"', '\\"')}"`).join(",")})`;
+}
+
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let result = 0;
+  for (let i = 0; i < a.length; i++) result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return result === 0;
+}
+
+async function hashPassword(password: string, salt: string): Promise<string> {
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(password),
+    "PBKDF2", false, ["deriveBits"]
+  );
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", hash: "SHA-256", salt: new TextEncoder().encode(salt), iterations: 100000 },
+    keyMaterial, 256
+  );
+  return Array.from(new Uint8Array(bits)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+const TOKEN_TTL_SECONDS = 86400;
+
+async function signToken(coachId: string, secret: string): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const payload = btoa(JSON.stringify({ sub: coachId, iat: now, exp: now + TOKEN_TTL_SECONDS }))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
+  const sigB64 = btoa(String.fromCharCode(...new Uint8Array(sig)))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+  return `${payload}.${sigB64}`;
+}
+
+async function verifyToken(token: string, secret: string): Promise<string | null> {
+  const dot = token.lastIndexOf(".");
+  if (dot < 1) return null;
+  const payload = token.slice(0, dot);
+  const sig = token.slice(dot + 1);
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" }, false, ["verify"]
+  );
+  let sigBytes: Uint8Array;
+  try {
+    sigBytes = Uint8Array.from(atob(sig.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+  } catch { return null; }
+  const valid = await crypto.subtle.verify("HMAC", key, sigBytes, new TextEncoder().encode(payload));
+  if (!valid) return null;
+  try {
+    const decoded = JSON.parse(atob(payload.replace(/-/g, "+").replace(/_/g, "/")));
+    if (typeof decoded?.exp === "number" && decoded.exp < Math.floor(Date.now() / 1000)) return null;
+    return typeof decoded?.sub === "string" ? decoded.sub : null;
+  } catch { return null; }
+}
+
+const STRIPE_TIMESTAMP_TOLERANCE_SECONDS = 300;
+
+async function verifyStripeSignature(rawBody: string, sigHeader: string | null, secret: string): Promise<boolean> {
+  if (!sigHeader) return false;
+  const parts = sigHeader.split(",");
+  const timestamp = parts.find((p) => p.startsWith("t="))?.slice(2);
+  const v1Signatures = parts.filter((p) => p.startsWith("v1=")).map((p) => p.slice(3));
+  if (!timestamp || v1Signatures.length === 0) return false;
+  const tsSeconds = parseInt(timestamp, 10);
+  if (isNaN(tsSeconds)) return false;
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  if (Math.abs(nowSeconds - tsSeconds) > STRIPE_TIMESTAMP_TOLERANCE_SECONDS) return false;
+  const signedPayload = `${timestamp}.${rawBody}`;
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signedPayload));
+  const computed = Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  return v1Signatures.some((v1) => timingSafeEqual(computed, v1));
 }
 
 function addDaysIsoDate(days: number) {
@@ -353,7 +434,7 @@ function json(body: unknown, init?: ResponseInit) {
       "content-type": "application/json; charset=utf-8",
       "access-control-allow-origin": "*",
       "access-control-allow-methods": "GET,POST,PATCH,DELETE,OPTIONS",
-      "access-control-allow-headers": "content-type",
+      "access-control-allow-headers": "content-type, authorization",
       ...init?.headers
     }
   });
@@ -538,8 +619,15 @@ export default {
     if (request.method === "OPTIONS") return json({ ok: true });
     const url = new URL(request.url);
     const path = url.pathname;
-    if (hasSupabase(env)) {
-      state = await loadSupabaseState(env, url.searchParams.get("coachId"));
+
+    const supabaseActive = hasSupabase(env);
+    const jwtConfigured = Boolean(env.COACHOS_JWT_SECRET);
+    const authEnabled = supabaseActive && jwtConfigured;
+    const authHeader = request.headers.get("Authorization") ?? "";
+    const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+    let authedCoachId: string | null = null;
+    if (authEnabled && bearerToken) {
+      authedCoachId = await verifyToken(bearerToken, env.COACHOS_JWT_SECRET!);
     }
 
     if (path === "/api/health") return json({ ok: true, service: "coachos-api" });
@@ -549,6 +637,126 @@ export default {
         stateFilePath: null,
         services: { planGeneration: "worker-local", proofCards: "worker-local", billing: "worker-local" }
       });
+    }
+
+    if (path === "/api/billing/webhooks/stripe" && request.method === "POST") {
+      const rawBody = await request.text();
+      if (!env.STRIPE_WEBHOOK_SECRET) {
+        return json({ message: "Webhook endpoint not configured." }, { status: 503 });
+      }
+      const stripeSignature = request.headers.get("stripe-signature");
+      const valid = await verifyStripeSignature(rawBody, stripeSignature, env.STRIPE_WEBHOOK_SECRET);
+      if (!valid) return json({ message: "Invalid webhook signature." }, { status: 401 });
+      let event: { type?: string; data?: { object?: { metadata?: { clientId?: string }; status?: string } } };
+      try { event = JSON.parse(rawBody); } catch { return json({ message: "Invalid JSON payload." }, { status: 400 }); }
+      const eventType = event?.type;
+      if (typeof eventType !== "string") return json({ message: "Missing event type." }, { status: 400 });
+      type ValidStatus = "active" | "past_due" | "cancelled";
+      const subscriptionObject = event?.data?.object;
+      const clientId = subscriptionObject?.metadata?.clientId;
+      if (!clientId) return json({ ok: true, ignored: true });
+      let resolvedStatus: ValidStatus | null = null;
+      if (eventType === "customer.subscription.updated" || eventType === "customer.subscription.deleted") {
+        const rawStatus = subscriptionObject?.status;
+        const normalized = rawStatus === "canceled" ? "cancelled" : rawStatus;
+        const validStatuses: ValidStatus[] = ["active", "past_due", "cancelled"];
+        if (typeof normalized === "string" && (validStatuses as string[]).includes(normalized)) {
+          resolvedStatus = normalized as ValidStatus;
+        }
+      } else if (eventType === "invoice.payment_succeeded") {
+        resolvedStatus = "active";
+      } else if (eventType === "invoice.payment_failed") {
+        resolvedStatus = "past_due";
+      } else {
+        return json({ ok: true, ignored: true });
+      }
+      if (!resolvedStatus) return json({ ok: true, ignored: true });
+      if (hasSupabase(env)) {
+        await supabase(env, "subscriptions", `?client_id=eq.${encodeURIComponent(clientId)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ status: resolvedStatus })
+        });
+      } else {
+        state.subscriptions = state.subscriptions.map((subscription) =>
+          subscription.clientId === clientId ? { ...subscription, status: resolvedStatus! } : subscription
+        );
+      }
+      track("payment_processed", clientId, { status: resolvedStatus, eventType });
+      return json({ ok: true });
+    }
+
+    if (path === "/api/auth/login" && request.method === "POST") {
+      const body = await parseJson(request) as { email?: string; password?: string };
+      if (!body.email || !body.password) return json({ message: "email and password are required." }, { status: 400 });
+      if (!hasSupabase(env)) return json({ message: "Authentication not available in demo mode." }, { status: 503 });
+      const coaches = await supabase<any[]>(env, "coaches", `?select=*&email=eq.${encodeURIComponent(body.email.trim())}&limit=1`);
+      const coach = coaches[0];
+      if (!coach) return json({ message: "Invalid email or password." }, { status: 401 });
+      const creds = await supabase<any[]>(env, "coach_credentials", `?coach_id=eq.${encodeURIComponent(coach.id)}&limit=1`);
+      const cred = creds[0];
+      if (!cred) return json({ message: "Invalid email or password." }, { status: 401 });
+      const hash = await hashPassword(body.password, cred.salt);
+      if (!timingSafeEqual(hash, cred.password_hash)) return json({ message: "Invalid email or password." }, { status: 401 });
+      const token = env.COACHOS_JWT_SECRET ? await signToken(coach.id, env.COACHOS_JWT_SECRET) : crypto.randomUUID();
+      return json({ token, coachId: coach.id });
+    }
+
+    if (path === "/api/auth/register" && request.method === "POST") {
+      const body = await parseJson(request) as { email?: string; password?: string; firstName?: string; lastName?: string; workspaceName?: string };
+      if (!body.email || !body.password || !body.firstName || !body.lastName) {
+        return json({ message: "email, password, firstName, and lastName are required." }, { status: 400 });
+      }
+      if (body.password.length < 6) return json({ message: "Password must be at least 6 characters." }, { status: 400 });
+      if (!hasSupabase(env)) return json({ message: "Authentication not available in demo mode." }, { status: 503 });
+      const existing = await supabase<any[]>(env, "coaches", `?select=id&email=eq.${encodeURIComponent(body.email.trim())}&limit=1`);
+      if (existing.length > 0) return json({ message: "An account with this email already exists." }, { status: 409 });
+      const onboardPayload: CoachOnboardingPayload = {
+        workspaceName: body.workspaceName ?? `${body.firstName}'s Coaching`,
+        coachFirstName: body.firstName,
+        coachLastName: body.lastName,
+        coachEmail: body.email.trim()
+      };
+      const nextState = createOnboardedState(onboardPayload);
+      await persistOnboardedState(env, nextState);
+      const salt = crypto.randomUUID();
+      const passwordHash = await hashPassword(body.password, salt);
+      await supabase(env, "coach_credentials", "", {
+        method: "POST",
+        body: JSON.stringify({ coach_id: nextState.coach.id, password_hash: passwordHash, salt })
+      });
+      state = nextState;
+      const token = env.COACHOS_JWT_SECRET ? await signToken(nextState.coach.id, env.COACHOS_JWT_SECRET) : crypto.randomUUID();
+      return json({
+        token,
+        coachId: nextState.coach.id,
+        session: {
+          workspace: nextState.workspace,
+          coach: nextState.coach,
+          clients: nextState.clients,
+          plans: nextState.plans,
+          subscriptions: nextState.subscriptions,
+          dashboard: summarizeMorningDashboard(nextState)
+        }
+      }, { status: 201 });
+    }
+
+    if (path === "/api/auth/logout" && request.method === "POST") {
+      return json({ ok: true });
+    }
+
+    if (path === "/api/auth/me" && request.method === "GET") {
+      if (!authedCoachId) return json({ message: "Unauthorized." }, { status: 401 });
+      return json({ coachId: authedCoachId });
+    }
+
+    if (supabaseActive) {
+      if (!jwtConfigured) {
+        return json({ message: "Server misconfiguration: COACHOS_JWT_SECRET is not set." }, { status: 500 });
+      }
+      if (!authedCoachId) {
+        return json({ message: "Unauthorized. Please log in." }, { status: 401 });
+      }
+      state = await loadSupabaseState(env, authedCoachId);
     }
     if (path === "/api/session/coach") {
       return json({
@@ -690,6 +898,7 @@ export default {
       return json(state.clientNotes.filter((note) => note.clientId === notesPath[1]).sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
     }
     if (notesPath && request.method === "POST") {
+      if (!getClient(notesPath[1])) return json({ message: "Client not found." }, { status: 404 });
       const body = await parseJson(request) as { content?: string };
       if (!body.content?.trim()) return json({ message: "content is required." }, { status: 400 });
       state.clientNotes ??= [];
@@ -710,6 +919,7 @@ export default {
       return json(state.bodyMetrics.filter((metric) => metric.clientId === metricsPath[1]).sort((a, b) => b.date.localeCompare(a.date)));
     }
     if (metricsPath && request.method === "POST") {
+      if (!getClient(metricsPath[1])) return json({ message: "Client not found." }, { status: 404 });
       const body = await parseJson(request) as { date?: string; weightKg?: number | null; bodyFatPct?: number | null; waistCm?: number | null };
       if (!body.date?.trim()) return json({ message: "date is required." }, { status: 400 });
       state.bodyMetrics ??= [];
@@ -726,6 +936,7 @@ export default {
 
     const sessionsPath = path.match(/^\/api\/clients\/([^/]+)\/sessions$/);
     if (sessionsPath && request.method === "POST") {
+      if (!getClient(sessionsPath[1])) return json({ message: "Client not found." }, { status: 404 });
       const body = await parseJson(request) as { date?: string; duration?: number; type?: "virtual" | "in-person"; notes?: string };
       if (!body.date?.trim()) return json({ message: "date is required." }, { status: 400 });
       if (!body.duration || body.duration <= 0) return json({ message: "duration must be a positive number." }, { status: 400 });
@@ -822,6 +1033,7 @@ export default {
         ...raw
       });
       if (!parsed.success) return json({ message: "Invalid check-in payload.", issues: parsed.error.issues }, { status: 400 });
+      if (!getClient(parsed.data.clientId)) return json({ message: "Client not found." }, { status: 404 });
       state.checkIns = [parsed.data, ...state.checkIns.filter((item) => item.id !== parsed.data.id)];
       if (hasSupabase(env)) {
         await supabase(env, "check_ins", "?on_conflict=id", {
@@ -842,6 +1054,7 @@ export default {
     if (path === "/api/messages" && request.method === "POST") {
       const body = await parseJson(request) as { clientId?: string; content?: string; sender?: "coach" | "client" };
       if (!body.clientId || !body.content || !body.sender) return json({ message: "Missing required message fields." }, { status: 400 });
+      if (!getClient(body.clientId)) return json({ message: "Client not found." }, { status: 404 });
       const message = { id: `msg_${Date.now()}`, clientId: body.clientId, coachId: state.coach.id, sender: body.sender, content: body.content, sentAt: new Date().toISOString(), readAt: null };
       state.messages.push(message);
       if (hasSupabase(env)) {
@@ -858,19 +1071,6 @@ export default {
       return json(summarizeMorningDashboard(state));
     }
     if (path === "/api/billing") return json(billingSummary());
-    if (path === "/api/billing/webhooks/stripe" && request.method === "POST") {
-      const body = await parseJson(request) as { clientId?: string; status?: "active" | "past_due" | "cancelled" };
-      if (!body.clientId || !body.status) return json({ message: "clientId and status are required." }, { status: 400 });
-      state.subscriptions = state.subscriptions.map((subscription) => subscription.clientId === body.clientId ? { ...subscription, status: body.status! } : subscription);
-      if (hasSupabase(env)) {
-        await supabase(env, "subscriptions", `?client_id=eq.${encodeURIComponent(body.clientId)}`, {
-          method: "PATCH",
-          body: JSON.stringify({ status: body.status })
-        });
-      }
-      track("payment_processed", body.clientId, { status: body.status });
-      return json(billingSummary());
-    }
     if (path === "/api/analytics") return json({ events: state.analytics, summary: analyticsSummary() });
     if (path === "/api/analytics/schema") return json({ eventNames: analyticsEventSchema.shape.name.options });
     if (path === "/api/analytics" && request.method === "POST") {
@@ -935,6 +1135,7 @@ export default {
     if (path === "/api/habits" && request.method === "POST") {
       const body = await parseJson(request) as { clientId?: string; title?: string; target?: number; frequency?: "daily" | "weekly" };
       if (!body.clientId || !body.title || body.target == null || !body.frequency) return json({ message: "clientId, title, target, and frequency are required." }, { status: 400 });
+      if (!getClient(body.clientId)) return json({ message: "Client not found." }, { status: 404 });
       const habit: Habit = { id: `habit_${Date.now()}`, clientId: body.clientId, title: body.title, target: body.target, frequency: body.frequency, createdAt: new Date().toISOString() };
       state.habits = [...(state.habits ?? []), habit];
       if (hasSupabase(env)) {
@@ -952,6 +1153,8 @@ export default {
     }
     const completePath = path.match(/^\/api\/habits\/([^/]+)\/complete$/);
     if (completePath && request.method === "POST") {
+      const habitOwner = (state.habits ?? []).find((h) => h.id === completePath[1]);
+      if (!habitOwner || !getClient(habitOwner.clientId)) return json({ message: "Habit not found." }, { status: 404 });
       const body = await parseJson(request) as { date?: string };
       const completion: HabitCompletion = { id: `hc_${Date.now()}`, habitId: completePath[1], date: body.date ?? new Date().toISOString().slice(0, 10), completed: true };
       state.habitCompletions = [...(state.habitCompletions ?? []), completion];
@@ -973,6 +1176,7 @@ export default {
       const body = await parseJson(request) as { planId: string; suggestion: NutritionSwap["swapSuggestion"]; originalFood: NutritionSwap["originalFood"] };
       const parsed = nutritionSwapSchema.safeParse({ id: `swap_${Date.now()}`, planId: body.planId, originalFood: body.originalFood, swapSuggestion: body.suggestion, appliedAt: new Date().toISOString() });
       if (!parsed.success) return json({ message: "Invalid swap application." }, { status: 400 });
+      if (!state.plans.find((p) => p.id === parsed.data.planId)) return json({ message: "Plan not found." }, { status: 404 });
       state.nutritionSwaps = [...(state.nutritionSwaps ?? []), parsed.data];
       if (hasSupabase(env)) {
         await supabase(env, "nutrition_swaps", "", {
@@ -988,16 +1192,26 @@ export default {
     if (path === "/api/exercises") return json(listExercises(url));
     if (path === "/api/recipes") return json(url.searchParams.has("food") ? suggestRecipe(url.searchParams.get("food")) : listRecipes(url.searchParams.get("search")));
     if (path === "/api/onboarding/coach" && request.method === "POST") {
-      const body = await parseJson(request) as CoachOnboardingPayload;
+      const body = await parseJson(request) as CoachOnboardingPayload & { password?: string };
       if (!body.workspaceName?.trim() || !body.coachFirstName?.trim() || !body.coachLastName?.trim() || !body.coachEmail?.includes("@")) {
         return json({ message: "workspaceName, coachFirstName, coachLastName, and coachEmail are required." }, { status: 400 });
       }
       const nextState = createOnboardedState(body);
       if (hasSupabase(env)) {
         await persistOnboardedState(env, nextState);
+        if (typeof body.password === "string" && body.password.length >= 6) {
+          const salt = crypto.randomUUID();
+          const passwordHash = await hashPassword(body.password, salt);
+          await supabase(env, "coach_credentials", "", {
+            method: "POST",
+            body: JSON.stringify({ coach_id: nextState.coach.id, password_hash: passwordHash, salt })
+          });
+        }
       }
       state = nextState;
+      const token = env.COACHOS_JWT_SECRET ? await signToken(state.coach.id, env.COACHOS_JWT_SECRET) : null;
       return json({
+        token,
         coachId: state.coach.id,
         workspaceId: state.workspace.id,
         session: {
