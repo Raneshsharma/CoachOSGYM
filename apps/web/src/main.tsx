@@ -171,34 +171,7 @@ function createPlannerTargets(client: ClientProfile | null | undefined): Planner
 /* ────────────────────────────────────────
    API HELPERS
 ──────────────────────────────────────── */
-const apiBase = "/api";
-const coachIdStorageKey = "coachos_coach_id";
-const authTokenStorageKey = "coachos_auth_token";
-
-function getStoredCoachId() {
-  try { return localStorage.getItem(coachIdStorageKey); }
-  catch { return null; }
-}
-
-function getStoredAuthToken() {
-  try { return localStorage.getItem(authTokenStorageKey); }
-  catch { return null; }
-}
-
-async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const coachId = getStoredCoachId();
-  const token = getStoredAuthToken();
-  const separator = path.includes("?") ? "&" : "?";
-  const scopedPath = coachId ? `${path}${separator}coachId=${encodeURIComponent(coachId)}` : path;
-  const authHeaders: Record<string, string> = token ? { "Authorization": `Bearer ${token}` } : {};
-  const res = await fetch(`${apiBase}${scopedPath}`, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...authHeaders, ...(init?.headers ?? {}) }
-  });
-  if (!res.ok) throw new Error(`API error ${res.status} for ${path}`);
-  return res.json() as Promise<T>;
-}
-export { fetchJson };
+import { fetchJson, apiBase, coachIdStorageKey, authTokenStorageKey } from "./lib/api";
 
 /* ────────────────────────────────────────
    TOAST HOOK
@@ -6431,5 +6404,9 @@ function App() {
   );
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+const __rootContainer = document.getElementById("root")!;
+// Reuse the root across HMR reloads to avoid the double-createRoot warning
+const __root = (globalThis as any).__coachosRoot
+  ?? ((globalThis as any).__coachosRoot = createRoot(__rootContainer));
+__root.render(<App />);
 

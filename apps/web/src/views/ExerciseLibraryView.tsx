@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { fetchJson } from "../main";
+import { fetchJson } from "../lib/api";
 
 type Exercise = { id: string; name: string; bodyPart: string; equipment: string; goal: string; difficulty: "beginner"|"intermediate"|"advanced"; instructions: string };
 

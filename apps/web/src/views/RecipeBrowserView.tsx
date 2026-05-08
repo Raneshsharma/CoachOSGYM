@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { fetchJson } from "../main";
+import { fetchJson } from "../lib/api";
 
 type Recipe = { id: string; name: string; ingredients: string[]; steps: string[]; calories: number; proteinG: number; carbsG: number; fatG: number; prepTime: number; cookTime: number; tags: string[] };
 

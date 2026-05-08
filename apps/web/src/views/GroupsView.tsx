@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import type { ClientProfile } from "@coachos/domain";
-import { fetchJson } from "../main";
+import { fetchJson } from "../lib/api";
 
 type GroupProgram = { id: string; coachId: string; title: string; description: string; goal: string; memberIds: string[]; monthlyPriceGbp: number; status: "active"|"archived"|"upcoming"; createdAt: string };
 
