@@ -444,6 +444,10 @@ export function createApp(store: DemoStore) {
   });
 
   // ── AI Nutrition Chat ─────────────────────────────────────
+  app.get("/api/ai/nutrition-status", (_req, res) => {
+    res.json({ keyConfigured: Boolean(process.env.OPENAI_API_KEY) });
+  });
+
   function buildNutritionSystemPrompt(profile: Record<string, unknown>, mealWeek?: Array<{ name: string; meals: Array<{ slot: string; name: string; cal: number; protein: number }> }>): string {
     const lines: string[] = [
       "You are a specialist AI nutrition coach assistant working inside CoachOS, a professional fitness coaching platform.",
@@ -527,7 +531,7 @@ export function createApp(store: DemoStore) {
   app.post("/api/ai/nutrition-chat", async (req, res) => {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      res.status(503).json({ error: "OPENAI_KEY_MISSING" });
+      res.status(503).json({ error: "OPENAI_KEY_MISSING", message: "Set OPENAI_API_KEY as a Replit secret." });
       return;
     }
 

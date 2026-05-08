@@ -47,18 +47,32 @@ interface AINutritionChatProps {
   mealWeek?: WeekDay[];
 }
 
+function authHeaders(): Record<string, string> {
+  const token = getStoredAuthToken();
+  const h: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) h["Authorization"] = `Bearer ${token}`;
+  return h;
+}
+
+async function checkKeyStatus(): Promise<boolean> {
+  try {
+    const res = await fetch(`${apiBase}/ai/nutrition-status`, { headers: authHeaders() });
+    if (!res.ok) return false;
+    const data = await res.json() as { keyConfigured?: boolean };
+    return Boolean(data.keyConfigured);
+  } catch {
+    return false;
+  }
+}
+
 async function fetchNutritionChat(
   messages: { role: "user" | "assistant"; content: string }[],
   clientProfile: ClientProfile,
   mealWeek?: WeekDay[]
 ): Promise<{ reply?: string; error?: string }> {
-  const token = getStoredAuthToken();
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-
   const res = await fetch(`${apiBase}/ai/nutrition-chat`, {
     method: "POST",
-    headers,
+    headers: authHeaders(),
     body: JSON.stringify({ messages, clientProfile, mealWeek }),
   });
 
@@ -181,18 +195,50 @@ const SUGGESTED_QUERIES = [
   "What are 3 snack options under 200 kcal?",
 ];
 
+function SetupScreen({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="ai-chat-setup">
+      <div className="ai-chat-setup-icon"><Sparkles size={28} /></div>
+      <h3>OpenAI API key required</h3>
+      <p>
+        To use AI Nutrition Chat, add your <strong>OPENAI_API_KEY</strong> as a Replit secret,
+        then restart the API Server workflow.
+      </p>
+      <ol className="ai-chat-setup-steps">
+        <li>Open the <strong>Secrets</strong> panel in your Replit workspace (lock icon in the sidebar)</li>
+        <li>Add a secret named <code>OPENAI_API_KEY</code> with your OpenAI API key</li>
+        <li>Restart the <strong>API Server</strong> workflow</li>
+      </ol>
+      <button className="ai-chat-setup-retry" onClick={onRetry}>
+        Check again
+      </button>
+    </div>
+  );
+}
+
 export function AINutritionChat({ clientProfile, mealWeek }: AINutritionChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
-  const [apiMissing, setApiMissing] = useState(false);
+  const [keyStatus, setKeyStatus] = useState<"checking" | "ok" | "missing">("checking");
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const verifyKeyStatus = useCallback(async () => {
+    setKeyStatus("checking");
+    const ok = await checkKeyStatus();
+    setKeyStatus(ok ? "ok" : "missing");
+  }, []);
+
+  useEffect(() => {
+    void verifyKeyStatus();
+  }, [verifyKeyStatus]);
 
   useEffect(() => {
     setMessages([]);
-    setApiMissing(false);
-  }, [clientProfile?.fullName]);
+    setKeyStatus("checking");
+    void verifyKeyStatus();
+  }, [clientProfile?.fullName, verifyKeyStatus]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -200,7 +246,7 @@ export function AINutritionChat({ clientProfile, mealWeek }: AINutritionChatProp
 
   const sendMessage = useCallback(async (text: string) => {
     const trimmed = text.trim();
-    if (!trimmed || loading || !clientProfile) return;
+    if (!trimmed || loading || !clientProfile || keyStatus !== "ok") return;
 
     const newMsg: ChatMessage = { role: "coach", content: trimmed };
     const updated = [...messages, newMsg];
@@ -218,7 +264,7 @@ export function AINutritionChat({ clientProfile, mealWeek }: AINutritionChatProp
       if (result.error === "OPENAI_KEY_MISSING") {
         setMessages(prev => prev.slice(0, -1));
         setInput(trimmed);
-        setApiMissing(true);
+        setKeyStatus("missing");
       } else {
         setMessages(prev => [...prev, { role: "ai", content: result.reply ?? "" }]);
       }
@@ -230,7 +276,7 @@ export function AINutritionChat({ clientProfile, mealWeek }: AINutritionChatProp
     } finally {
       setLoading(false);
     }
-  }, [clientProfile, loading, mealWeek, messages]);
+  }, [clientProfile, keyStatus, loading, mealWeek, messages]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -248,25 +294,17 @@ export function AINutritionChat({ clientProfile, mealWeek }: AINutritionChatProp
     );
   }
 
-  if (apiMissing) {
+  if (keyStatus === "checking") {
     return (
-      <div className="ai-chat-setup">
-        <div className="ai-chat-setup-icon"><Sparkles size={28} /></div>
-        <h3>OpenAI API key required</h3>
-        <p>
-          To use AI Nutrition Chat, add your <strong>OPENAI_API_KEY</strong> as a Replit secret,
-          then restart the API Server workflow.
-        </p>
-        <ol className="ai-chat-setup-steps">
-          <li>Open the <strong>Secrets</strong> panel in your Replit workspace (lock icon in the sidebar)</li>
-          <li>Add a secret named <code>OPENAI_API_KEY</code> with your OpenAI API key</li>
-          <li>Restart the <strong>API Server</strong> workflow</li>
-        </ol>
-        <button className="ai-chat-setup-retry" onClick={() => setApiMissing(false)}>
-          Try again
-        </button>
+      <div className="ai-chat-empty">
+        <div className="ai-chat-dot" style={{ width: 10, height: 10, animationDelay: "0s" }} />
+        <p style={{ marginTop: "0.5rem", color: "var(--text-muted)", fontSize: "0.875rem" }}>Loading AI assistant…</p>
       </div>
     );
+  }
+
+  if (keyStatus === "missing") {
+    return <SetupScreen onRetry={verifyKeyStatus} />;
   }
 
   const hasConditions = (clientProfile.healthConditions ?? []).length > 0;
