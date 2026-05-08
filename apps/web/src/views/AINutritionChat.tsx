@@ -294,6 +294,19 @@ export function AINutritionChat({ clientProfile, mealWeek, messages, onMessagesC
     return <SetupScreen onRetry={verifyKeyStatus} />;
   }
 
+  if (keyStatus === "error") {
+    return (
+      <div className="ai-chat-setup">
+        <div className="ai-chat-setup-icon" style={{ background: "var(--warning-light)", color: "var(--warning-text)" }}>
+          <Bot size={28} />
+        </div>
+        <h3>Could not reach AI assistant</h3>
+        <p>There was a problem connecting to the AI server. Check that the API Server workflow is running, then try again.</p>
+        <button className="ai-chat-setup-retry" onClick={verifyKeyStatus}>Retry</button>
+      </div>
+    );
+  }
+
   const hasConditions = (clientProfile.healthConditions ?? []).length > 0;
   const hasSupplements = (clientProfile.supplements ?? []).length > 0;
 
